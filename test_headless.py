@@ -118,7 +118,7 @@ def clique(jogo, pos):
 
 def dedo(jogo, tipo, fid, pos):
     jogo.tratar_evento(pygame.event.Event(tipo, finger_id=fid, touch_id=0,
-                                          x=pos[0] / main.LARGURA, y=pos[1] / main.ALTURA, dx=0, dy=0))
+                                          x=pos[0] / jogo.larg_tela, y=pos[1] / main.ALTURA, dx=0, dy=0))
 
 
 def resposta_certa(jogo):
@@ -266,7 +266,7 @@ def testar_fluxo(salvar_dir=None):
     jogo.jogador.rect.center = jogo.fase.inicio
     jogo.jogador.px, jogo.jogador.py = jogo.jogador.rect.center
     x0 = jogo.jogador.rect.centerx
-    base = main.ControlesToque.BASE
+    base = jogo.toque.base
     dedo(jogo, pygame.FINGERDOWN, 1, base)
     assert jogo.toque.ativo
     dedo(jogo, pygame.FINGERMOTION, 1, (base[0] + 70, base[1]))
@@ -277,8 +277,8 @@ def testar_fluxo(salvar_dir=None):
     assert jogo.toque.vetor == (0.0, 0.0)
     jogo.jogador.rect.midbottom = (t0.rect.centerx, t0.rect.bottom + 22)
     jogo.jogador.px, jogo.jogador.py = jogo.jogador.rect.center
-    dedo(jogo, pygame.FINGERDOWN, 2, main.ControlesToque.BTN_E[0])
-    dedo(jogo, pygame.FINGERUP, 2, main.ControlesToque.BTN_E[0])
+    dedo(jogo, pygame.FINGERDOWN, 2, jogo.toque.btn_e[0])
+    dedo(jogo, pygame.FINGERUP, 2, jogo.toque.btn_e[0])
     assert jogo.desafio, "botão E (toque) não abriu o terminal"
     passos(jogo, 2)
     salvar(jogo, salvar_dir, "14_teclado_terminal")
@@ -299,7 +299,34 @@ def testar_fluxo(salvar_dir=None):
     salvar(jogo, salvar_dir, "15_teclado_notas")
     clique(jogo, tn["FECHAR"])
     assert not jogo.notas.aberto
-    print("OK fluxo completo: menu→5 fases→final→reinício, erro sorteia nova questão, derrotas, notas")
+    tecla(jogo, pygame.K_RETURN)          # fecha o feedback do terminal
+    assert jogo.desafio is None
+    # tela larga (celular deitado, ~20:9): jogo centralizado, controles nas faixas laterais
+    jogo.ajustar_largura(1400)
+    ox = jogo.ox
+    assert jogo.display.get_width() == 1400 and ox == 188 and jogo.toque.lateral
+    assert jogo.toque.base[0] < ox and jogo.toque.btn_e[0][0] > ox + main.LARGURA, "controles fora das faixas"
+    jogo.jogador.rect.center = jogo.fase.inicio
+    jogo.jogador.px, jogo.jogador.py = jogo.jogador.rect.center
+    y0 = jogo.jogador.rect.centery
+    b = jogo.toque.base
+    dedo(jogo, pygame.FINGERDOWN, 7, b)
+    dedo(jogo, pygame.FINGERMOTION, 7, (b[0], b[1] + 60))
+    passos(jogo, 30)
+    assert jogo.jogador.rect.centery > y0 + 40, "joystick lateral não moveu"
+    pygame.image.save(jogo.display, os.path.join(salvar_dir, "16_tela_larga.png")) if salvar_dir else None
+    dedo(jogo, pygame.FINGERUP, 7, b)
+    na_tela = lambda p: (p[0] + ox, p[1])
+    dedo(jogo, pygame.FINGERDOWN, 8, na_tela(jogo.r_pausa.center))
+    assert jogo.pausado, "toque no botão de pausa (tela larga) falhou"
+    dedo(jogo, pygame.FINGERDOWN, 8, na_tela(jogo.btn_continuar.rect.center))
+    assert not jogo.pausado, "toque convertido em clique (tela larga) falhou"
+    mudo = jogo.som.mudo
+    jogo.tratar_evento(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=na_tela(jogo.r_som.center), button=1, touch=False))
+    assert jogo.som.mudo != mudo, "clique de mouse (tela larga) falhou"
+    jogo.ajustar_largura(main.LARGURA)
+    assert jogo.ox == 0 and not jogo.toque.lateral
+    print("OK fluxo completo: menu→5 fases→final→reinício, erro sorteia nova questão, derrotas, notas, toque, tela larga")
 
 
 def salvar(jogo, pasta, nome):

@@ -47,6 +47,16 @@ VEL_JOGADOR = 175               # pixels por segundo
 TOTAL_ACERTOS = 12
 EH_WEB = sys.platform == "emscripten"   # rodando no navegador (pygbag / WebAssembly)
 
+# Em telas mais largas que 16:10 (celular deitado) o jogo 1024x640 fica centralizado e as
+# faixas laterais recebem os controles de toque. DESLOCAMENTO_X = largura de cada faixa.
+DESLOCAMENTO_X = 0
+
+
+def mouse_jogo():
+    """Posição do mouse em coordenadas do jogo (descontando a faixa lateral)."""
+    x, y = pygame.mouse.get_pos()
+    return x - DESLOCAMENTO_X, y
+
 # Estados do jogo
 MENU, INTRO, JOGANDO, ESCOLHA_FINAL, VITORIA, DERROTA = range(6)
 
@@ -1033,7 +1043,7 @@ class Desafio:
         self.estado = "pergunta"
 
     def _botao(self, surf, rect, texto, cor):
-        sobre = rect.collidepoint(pygame.mouse.get_pos())
+        sobre = rect.collidepoint(mouse_jogo())
         pygame.draw.rect(surf, (30, 110, 140) if sobre else (20, 70, 100), rect, border_radius=8)
         pygame.draw.rect(surf, cor, rect, 2, border_radius=8)
         desenhar_texto(surf, texto, self.jogo.fontes["texto"], BRANCO,
@@ -1084,22 +1094,38 @@ class Desafio:
 # CONTROLES DE TOQUE (celular / tablet)
 # ----------------------------------------------------------------------------
 class ControlesToque:
-    """Joystick virtual + botões de ação. Aceita vários dedos ao mesmo tempo."""
-    BASE = (130, ALTURA - 130)
-    RAIO = 74
-    BTN_E = ((LARGURA - 120, ALTURA - 130), 58)
-    BTN_N = ((LARGURA - 250, ALTURA - 80), 38)
+    """Joystick virtual + botões de ação. Aceita vários dedos ao mesmo tempo.
+
+    Usa coordenadas da TELA real (não do jogo). Com faixas laterais largas (celular
+    deitado) os controles ficam nelas; sem faixas, ficam por cima dos cantos do mapa.
+    """
 
     def __init__(self):
         self.ativo = False
         self.dedo_joy = None
         self.vetor = (0.0, 0.0)
-        self.knob = self.BASE
+        self.layout(LARGURA, 0)
+
+    def layout(self, larg_tela, margem):
+        self.lateral = margem >= 150
+        if self.lateral:
+            meio_esq, meio_dir = margem // 2, larg_tela - margem // 2
+            self.raio = min(80, margem // 2 - 14)
+            self.base = (meio_esq, ALTURA - 190)
+            self.btn_e = ((meio_dir, ALTURA - 250), min(64, margem // 2 - 12))
+            self.btn_n = ((meio_dir, ALTURA - 100), 44)
+        else:
+            self.raio = 74
+            self.base = (margem + 130, ALTURA - 130)
+            self.btn_e = ((margem + LARGURA - 120, ALTURA - 130), 58)
+            self.btn_n = ((margem + LARGURA - 250, ALTURA - 80), 38)
+        self.camada = pygame.Surface((larg_tela, ALTURA), pygame.SRCALPHA)
+        self.soltar_tudo()
 
     def soltar_tudo(self):
         self.dedo_joy = None
         self.vetor = (0.0, 0.0)
-        self.knob = self.BASE
+        self.knob = self.base
 
     @staticmethod
     def _dentro(pos, centro, raio):
@@ -1107,11 +1133,11 @@ class ControlesToque:
 
     def apertar(self, dedo, pos):
         """Devolve 'E', 'N', 'JOY' ou None (toque fora dos controles)."""
-        if self._dentro(pos, *self.BTN_E):
+        if self._dentro(pos, *self.btn_e):
             return "E"
-        if self._dentro(pos, *self.BTN_N):
+        if self._dentro(pos, *self.btn_n):
             return "N"
-        if self._dentro(pos, self.BASE, self.RAIO * 1.6):
+        if self._dentro(pos, self.base, self.raio * 1.6):
             self.dedo_joy = dedo
             self.mover(dedo, pos)
             return "JOY"
@@ -1120,28 +1146,30 @@ class ControlesToque:
     def mover(self, dedo, pos):
         if dedo != self.dedo_joy:
             return
-        dx, dy = pos[0] - self.BASE[0], pos[1] - self.BASE[1]
+        dx, dy = pos[0] - self.base[0], pos[1] - self.base[1]
         d = math.hypot(dx, dy)
-        if d > self.RAIO:
-            dx, dy = dx / d * self.RAIO, dy / d * self.RAIO
-        self.knob = (self.BASE[0] + dx, self.BASE[1] + dy)
-        self.vetor = (dx / self.RAIO, dy / self.RAIO)
+        if d > self.raio:
+            dx, dy = dx / d * self.raio, dy / d * self.raio
+        self.knob = (self.base[0] + dx, self.base[1] + dy)
+        self.vetor = (dx / self.raio, dy / self.raio)
 
     def soltar(self, dedo):
         if dedo == self.dedo_joy:
             self.soltar_tudo()
 
-    def desenhar(self, surf, fontes, perto_terminal, camada):
+    def desenhar(self, surf, fontes, perto_terminal):
+        camada = self.camada
         camada.fill((0, 0, 0, 0))
-        pygame.draw.circle(camada, (70, 220, 235, 50), self.BASE, self.RAIO)
-        pygame.draw.circle(camada, (70, 220, 235, 140), self.BASE, self.RAIO, 3)
-        pygame.draw.circle(camada, (200, 245, 255, 170), (int(self.knob[0]), int(self.knob[1])), 30)
-        (ce, re), (cn, rn) = self.BTN_E, self.BTN_N
-        cor_e = (250, 200, 60, 200) if perto_terminal else (120, 140, 160, 120)
+        forte = 90 if self.lateral else 50          # nas faixas não cobre o mapa: pode ser mais visível
+        pygame.draw.circle(camada, (70, 220, 235, forte), self.base, self.raio)
+        pygame.draw.circle(camada, (70, 220, 235, 160), self.base, self.raio, 3)
+        pygame.draw.circle(camada, (200, 245, 255, 190), (int(self.knob[0]), int(self.knob[1])), int(self.raio * 0.4))
+        (ce, re), (cn, rn) = self.btn_e, self.btn_n
+        cor_e = (250, 200, 60, 220) if perto_terminal else (120, 140, 160, 150)
         pygame.draw.circle(camada, cor_e, ce, re)
-        pygame.draw.circle(camada, (255, 255, 255, 180), ce, re, 3)
-        pygame.draw.circle(camada, (238, 228, 190, 150), cn, rn)
-        pygame.draw.circle(camada, (255, 255, 255, 180), cn, rn, 3)
+        pygame.draw.circle(camada, (255, 255, 255, 190), ce, re, 3)
+        pygame.draw.circle(camada, (238, 228, 190, 170), cn, rn)
+        pygame.draw.circle(camada, (255, 255, 255, 190), cn, rn, 3)
         surf.blit(camada, (0, 0))
         img = fontes["grande"].render("E", True, (20, 20, 20))
         surf.blit(img, img.get_rect(center=(ce[0], ce[1] - 8)))
@@ -1166,7 +1194,7 @@ class Botao:
         return e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and self.rect.collidepoint(e.pos)
 
     def desenhar(self, surf, fonte, subtexto=None):
-        sobre = self.rect.collidepoint(pygame.mouse.get_pos())
+        sobre = self.rect.collidepoint(mouse_jogo())
         c = tuple(min(255, v + 40) for v in self.cor) if sobre else self.cor
         pygame.draw.rect(surf, c, self.rect, border_radius=10)
         pygame.draw.rect(surf, CIANO, self.rect, 2, border_radius=10)
@@ -1183,12 +1211,20 @@ class Jogo:
         pygame.mixer.pre_init(22050, -16, 1, 512)
         pygame.init()
         pygame.display.set_caption("Protocolo Cronos: O Bunker Submerso")
+        # self.display = janela/canvas real (pode ser mais larga que o jogo no celular deitado)
+        # self.tela    = superfície 1024x640 onde todo o jogo é desenhado
+        # No navegador o pygbag já escala o canvas; SCALED ali distorce as coordenadas do toque.
+        self._flags = 0 if EH_WEB else (pygame.SCALED | pygame.RESIZABLE)
+        self.larg_tela = LARGURA
+        self.ox = 0
+        self.retrato = False
+        self._checar_tela_t = 0.0
         try:
-            # No navegador o pygbag já escala o canvas; SCALED ali distorce as coordenadas do toque.
-            flags = 0 if EH_WEB else (pygame.SCALED | pygame.RESIZABLE)
-            self.tela = pygame.display.set_mode((LARGURA, ALTURA), flags)
+            self.display = pygame.display.set_mode((LARGURA, ALTURA), self._flags)
         except pygame.error:
-            self.tela = pygame.display.set_mode((LARGURA, ALTURA))
+            self._flags = 0
+            self.display = pygame.display.set_mode((LARGURA, ALTURA))
+        self.tela = pygame.Surface((LARGURA, ALTURA))
         pygame.display.set_icon(self._icone())
         self.relogio = pygame.time.Clock()
         # superfícies reutilizadas a cada frame (evita alocar telas inteiras por quadro)
@@ -1232,7 +1268,87 @@ class Jogo:
         self.final_escolhido = None
         self.toque = ControlesToque()
         self.toque.ativo = self._eh_celular()
+        if self.toque.ativo:
+            self._instalar_tela_cheia()
+            self.checar_tela(forcar=True)
         self.novo_jogo(iniciar=False)
+
+    # ------------------------------------------------------------ tela (celular)
+    @staticmethod
+    def _instalar_tela_cheia():
+        """No navegador do celular: a cada toque, entra em tela cheia e trava na horizontal.
+
+        O pedido roda dentro do próprio evento de toque do navegador (exigência dos browsers).
+        No iPhone o Safari não permite tela cheia em páginas; lá a saída é 'Adicionar à Tela de Início'.
+        """
+        js = """
+        (function(){
+          function cheia(){
+            var d=document, e=d.documentElement;
+            if (d.fullscreenElement || d.webkitFullscreenElement) return;
+            var pedir = e.requestFullscreen || e.webkitRequestFullscreen;
+            if (!pedir) return;
+            try {
+              var p = pedir.call(e, {navigationUI: "hide"});
+              if (p && p.then) p.then(function(){
+                if (screen.orientation && screen.orientation.lock)
+                  screen.orientation.lock("landscape").catch(function(){});
+              }).catch(function(){});
+            } catch(err) {}
+          }
+          window.addEventListener("touchend", cheia, true);
+          window.addEventListener("click", cheia, true);
+        })();
+        """
+        try:
+            import platform
+            platform.window.eval(js)
+        except Exception:
+            pass
+
+    def checar_tela(self, forcar=False):
+        """Ajusta a largura do canvas à proporção da tela do aparelho (só no navegador)."""
+        if not EH_WEB:
+            return
+        try:
+            import platform
+            w, h = float(platform.window.innerWidth), float(platform.window.innerHeight)
+        except Exception:
+            return
+        if w <= 0 or h <= 0:
+            return
+        self.retrato = h > w
+        alvo = LARGURA if self.retrato else int(ALTURA * w / h)
+        self.ajustar_largura(alvo, forcar)
+
+    def ajustar_largura(self, larg, forcar=False):
+        """Redimensiona a tela real; o jogo fica centralizado e as faixas laterais recebem os controles."""
+        global DESLOCAMENTO_X
+        larg = max(LARGURA, min(int(larg), LARGURA * 2))
+        larg -= larg % 2
+        if not forcar and abs(larg - self.larg_tela) < 8:
+            return
+        try:
+            self.display = pygame.display.set_mode((larg, ALTURA), self._flags)
+        except pygame.error:
+            try:    # o modo SCALED (desktop) não aceita trocar de tamanho; usa o modo simples
+                self._flags = 0
+                self.display = pygame.display.set_mode((larg, ALTURA))
+            except pygame.error:
+                return
+        self.larg_tela = larg
+        self.ox = DESLOCAMENTO_X = (larg - LARGURA) // 2
+        self.toque.layout(larg, self.ox)
+        if EH_WEB:
+            try:
+                import platform
+                platform.window.window_resize()     # o pygbag reajusta o tamanho do canvas na página
+            except Exception:
+                pass
+
+    def para_jogo(self, pos):
+        """Converte coordenadas da tela real para as do jogo."""
+        return (int(pos[0]) - self.ox, int(pos[1]))
 
     @staticmethod
     def _eh_celular():
@@ -1353,13 +1469,15 @@ class Jogo:
 
     # ------------------------------------------------------------ eventos
     def apertar(self, dedo, pos):
-        """Botões de sistema e controles de toque. Devolve True se o toque/clique foi consumido."""
-        if self.r_som.collidepoint(pos):
+        """Botões de sistema e controles de toque (pos em coordenadas da tela real).
+        Devolve True se o toque/clique foi consumido."""
+        pj = self.para_jogo(pos)
+        if self.r_som.collidepoint(pj):
             self.som.alternar_mudo()
             return True
         if self.estado != JOGANDO or self.pausado:
             return False
-        if self.r_pausa.collidepoint(pos):
+        if self.r_pausa.collidepoint(pj):
             self.pausado = True
             self.toque.soltar_tudo()
             return True
@@ -1381,11 +1499,12 @@ class Jogo:
         if e.type in (pygame.FINGERDOWN, pygame.FINGERMOTION, pygame.FINGERUP):
             self.toque.ativo = True
             self._viu_dedo = True
-            pos = (int(e.x * LARGURA), int(e.y * ALTURA))
+            pos = (int(e.x * self.larg_tela), int(e.y * ALTURA))     # coordenadas da tela real
             dedo = ("dedo", e.finger_id)
             if e.type == pygame.FINGERDOWN:
                 if not self.apertar(dedo, pos):
-                    self.tratar_evento(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=pos, button=1, sintetico=True))
+                    self.tratar_evento(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=self.para_jogo(pos),
+                                                          button=1, sintetico=True))
             elif e.type == pygame.FINGERMOTION:
                 self.toque.mover(dedo, pos)
             else:
@@ -1394,13 +1513,16 @@ class Jogo:
         if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
             if getattr(e, "touch", False) and getattr(self, "_viu_dedo", False):
                 return      # o SDL duplica cada toque como mouse; ele já foi tratado acima
-            if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and not getattr(e, "sintetico", False):
-                if self.apertar("mouse", e.pos):
-                    return
-            elif e.type == pygame.MOUSEMOTION:
-                self.toque.mover("mouse", e.pos)
-            elif e.type == pygame.MOUSEBUTTONUP and e.button == 1:
-                self.toque.soltar("mouse")
+            if not getattr(e, "sintetico", False):
+                # e.pos vem na tela real: controles usam ela; o resto do jogo recebe a posição convertida
+                if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                    if self.apertar("mouse", e.pos):
+                        return
+                elif e.type == pygame.MOUSEMOTION:
+                    self.toque.mover("mouse", e.pos)
+                elif e.type == pygame.MOUSEBUTTONUP and e.button == 1:
+                    self.toque.soltar("mouse")
+                e = pygame.event.Event(e.type, {**e.dict, "pos": self.para_jogo(e.pos), "sintetico": True})
         # --- atalhos globais ---
         if e.type == pygame.KEYDOWN and not self.notas.aberto:
             if e.key == pygame.K_m:
@@ -1455,6 +1577,11 @@ class Jogo:
     def atualizar(self, dt):
         self.t += dt
         self.som.preparar()
+        if self.toque.ativo and EH_WEB:              # celular girou / entrou em tela cheia?
+            self._checar_tela_t += dt
+            if self._checar_tela_t > 0.5:
+                self._checar_tela_t = 0.0
+                self.checar_tela()
         for b in self.bolhas:
             b[1] -= b[3] * dt
             b[0] += math.sin(self.t + b[2]) * 8 * dt
@@ -1622,8 +1749,7 @@ class Jogo:
             painel(c, r, borda=AMARELO)
             desenhar_texto(c, txt, self.fontes["texto"], AMARELO, (r.centerx, r.y + 7), centro=True)
         self.tela.blit(c, (0, 0))
-        if self.toque.ativo and not (self.desafio or self.notas.aberto or self.pausado):
-            self.toque.desenhar(self.tela, self.fontes, prox is not None, self.camada)
+        self._perto_terminal = prox is not None
         if self.desafio:
             self.desafio.desenhar(self.tela, self.t)
         if self.notas.aberto:
@@ -1719,7 +1845,25 @@ class Jogo:
         else:
             self.desenhar_fim(self.tela)
         self.desenhar_botoes_sistema(self.tela)
+        self.compor_tela()
         pygame.display.flip()
+
+    def compor_tela(self):
+        """Põe o jogo (1024x640) no centro da tela real e desenha os controles de toque por cima/ao lado."""
+        d = self.display
+        if self.ox:
+            d.fill((4, 9, 16))
+            pygame.draw.line(d, (30, 70, 90), (self.ox - 1, 0), (self.ox - 1, ALTURA), 2)
+            pygame.draw.line(d, (30, 70, 90), (self.ox + LARGURA, 0), (self.ox + LARGURA, ALTURA), 2)
+        d.blit(self.tela, (self.ox, 0))
+        jogando_livre = self.estado == JOGANDO and not (self.desafio or self.notas.aberto or self.pausado)
+        if self.toque.ativo and jogando_livre:
+            self.toque.desenhar(d, self.fontes, getattr(self, "_perto_terminal", False))
+        if self.retrato and self.toque.ativo:
+            d.blit(self.veu(200), (self.ox, 0))
+            desenhar_texto(d, "Gire o celular", self.fontes["gigante"], CIANO, (d.get_width() // 2, 230), centro=True)
+            desenhar_texto(d, "O jogo funciona na horizontal.", self.fontes["titulo"], BRANCO,
+                           (d.get_width() // 2, 310), centro=True)
 
     # ------------------------------------------------------------ laço principal
     async def executar(self):

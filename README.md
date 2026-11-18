@@ -64,7 +64,9 @@ O jogo roda no navegador do celular (versão web, abaixo). Os controles de toque
 - **Teclado numérico na tela** dentro do terminal e **teclado de calculadora** no bloco de notas;
 - Botões de **pausa** e **som** no topo da tela.
 
-Use o celular **na horizontal** para a tela ficar maior.
+Use o celular **na horizontal**. No Android o jogo entra em **tela cheia** no primeiro toque e o mapa fica no
+centro, com o joystick e os botões nas faixas laterais. No **iPhone** o Safari não permite tela cheia em páginas;
+para jogar sem as barras do navegador, use *Compartilhar → Adicionar à Tela de Início* e abra pelo ícone.
 
 ## Instalação e execução
 
