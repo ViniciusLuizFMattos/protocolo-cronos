@@ -368,8 +368,41 @@ def testar_fluxo(salvar_dir=None):
     mudo = jogo.som.mudo
     jogo.tratar_evento(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=na_tela(jogo.r_som.center), button=1, touch=False))
     assert jogo.som.mudo != mudo, "clique de mouse (tela larga) falhou"
+    # controle de volume na pausa: toque arrastando (na tela larga)
+    if jogo.som.mudo:
+        jogo.som.alternar_mudo()
+    dedo(jogo, pygame.FINGERDOWN, 9, na_tela(jogo.r_pausa.center))
+    assert jogo.pausado
+    rv = jogo.r_volume()
+    x0, x1 = rv.x + 14, rv.right - 14
+    dedo(jogo, pygame.FINGERDOWN, 10, na_tela((x0 + (x1 - x0) * 0.25, rv.centery)))
+    assert abs(jogo.som.volume - 0.25) < 0.02, jogo.som.volume
+    dedo(jogo, pygame.FINGERMOTION, 10, na_tela((x0 + (x1 - x0) * 0.9, rv.centery)))
+    assert abs(jogo.som.volume - 0.9) < 0.02, jogo.som.volume
+    dedo(jogo, pygame.FINGERUP, 10, na_tela((x0 + (x1 - x0) * 0.9, rv.centery)))
+    assert jogo.arrastando_vol is None and jogo.pausado
+    passos(jogo, 2)
+    pygame.image.save(jogo.display, os.path.join(salvar_dir, "17_volume_pausa.png")) if salvar_dir else None
+    dedo(jogo, pygame.FINGERDOWN, 11, na_tela(jogo.btn_continuar.rect.center))
+    assert not jogo.pausado
     jogo.ajustar_largura(main.LARGURA)
     assert jogo.ox == 0 and not jogo.toque.lateral
+    # controle de volume no menu: mouse arrastando + teclas - / +
+    jogo.estado = main.MENU
+    rv = jogo.r_volume()
+    x0, x1 = rv.x + 14, rv.right - 14
+    jogo.tratar_evento(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(x0, rv.centery), button=1, touch=False))
+    assert jogo.som.volume < 0.02
+    jogo.tratar_evento(pygame.event.Event(pygame.MOUSEMOTION, pos=(x0 + (x1 - x0) // 2, rv.centery), rel=(0, 0),
+                                          buttons=(1, 0, 0), touch=False))
+    jogo.tratar_evento(pygame.event.Event(pygame.MOUSEBUTTONUP, pos=(x0 + (x1 - x0) // 2, rv.centery), button=1, touch=False))
+    assert abs(jogo.som.volume - 0.5) < 0.03 and jogo.arrastando_vol is None
+    tecla(jogo, pygame.K_EQUALS, "=")
+    assert abs(jogo.som.volume - 0.6) < 0.03
+    tecla(jogo, pygame.K_MINUS, "-")
+    assert abs(jogo.som.volume - 0.5) < 0.03
+    passos(jogo, 2)
+    salvar(jogo, salvar_dir, "18_volume_menu")
     print("OK fluxo completo: menu→5 fases→final→reinício, erro sorteia nova questão, derrotas, notas, toque, tela larga")
 
 

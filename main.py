@@ -54,7 +54,7 @@ BUFFER_AUDIO = 4096 if EH_WEB else 2048
 # No navegador fica em 22 kHz: metade do trabalho para gerar os sons em WebAssembly.
 FREQ_AUDIO = 22050 if EH_WEB else 44100
 if EH_WEB:
-    FPS = 40      # no navegador/celular: menos quadros por segundo, mais folga para o áudio
+    FPS = 30      # no navegador/celular: menos quadros por segundo, mais folga para o áudio
 
 # Em telas mais largas que 16:10 (celular deitado) o jogo 1024x640 fica centralizado e as
 # faixas laterais recebem os controles de toque. DESLOCAMENTO_X = largura de cada faixa.
@@ -391,6 +391,7 @@ class Som:
     def __init__(self):
         self.ativo = False
         self.mudo = False
+        self.volume = 0.7            # volume geral escolhido no controle deslizante (0 a 1)
         self.sons = {}
         self.canais = 1
         self._gerador = None
@@ -431,6 +432,15 @@ class Som:
             except Exception:
                 pass
         return self.mudo
+
+    def definir_volume(self, v):
+        """Ajusta o volume geral (0 a 1) e aplica na música que já está tocando."""
+        self.volume = max(0.0, min(1.0, v))
+        if self.ativo and "sonar" in self.sons:
+            try:
+                self.sons["sonar"].set_volume(self.VOL_MUSICA * self.volume)
+            except Exception:
+                pass
 
     # --- geração ---
     GANHO = 0.42     # volume geral: deixa folga para música + efeitos somados não distorcerem
@@ -553,9 +563,9 @@ class Som:
 
     # --- uso ---
     def tocar(self, nome, volume=0.55):
-        if self.ativo and not self.mudo and nome in self.sons:
+        if self.ativo and not self.mudo and self.volume > 0 and nome in self.sons:
             try:
-                self.sons[nome].set_volume(volume)
+                self.sons[nome].set_volume(volume * self.volume)
                 self.sons[nome].play()
             except Exception:
                 pass
@@ -564,7 +574,7 @@ class Som:
         if self.mudo or not self.ativo:
             return
         try:
-            self.sons["sonar"].set_volume(self.VOL_MUSICA)
+            self.sons["sonar"].set_volume(self.VOL_MUSICA * self.volume)
             self.sons["sonar"].play(loops=-1)
             self._musica_tocando = True
         except Exception:
@@ -1403,6 +1413,7 @@ class Jogo:
         self.r_som = pygame.Rect(LARGURA - 48, 12, 40, 40)      # botão de som (todas as telas)
         self.r_pausa = pygame.Rect(LARGURA - 94, 12, 40, 40)    # botão de pausa (durante o jogo)
         self.final_escolhido = None
+        self.arrastando_vol = None      # dedo/mouse que está arrastando o controle de volume
         self.toque = ControlesToque()
         self.toque.ativo = self._eh_celular()
         if self.toque.ativo:
@@ -1619,6 +1630,11 @@ class Jogo:
         if self.r_som.collidepoint(pj):
             self.som.alternar_mudo()
             return True
+        rv = self.r_volume()
+        if rv and rv.inflate(24, 20).collidepoint(pj):          # começa a arrastar o volume
+            self.arrastando_vol = dedo
+            self._ajustar_volume(pj[0])
+            return True
         if self.estado != JOGANDO or self.pausado:
             return False
         if self.r_pausa.collidepoint(pj):
@@ -1650,8 +1666,12 @@ class Jogo:
                     self.tratar_evento(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=self.para_jogo(pos),
                                                           button=1, sintetico=True))
             elif e.type == pygame.FINGERMOTION:
+                if self.arrastando_vol == dedo:
+                    self._ajustar_volume(self.para_jogo(pos)[0])
                 self.toque.mover(dedo, pos)
             else:
+                if self.arrastando_vol == dedo:
+                    self.arrastando_vol = None
                 self.toque.soltar(dedo)
             return
         if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
@@ -1663,14 +1683,26 @@ class Jogo:
                     if self.apertar("mouse", e.pos):
                         return
                 elif e.type == pygame.MOUSEMOTION:
+                    if self.arrastando_vol == "mouse":
+                        self._ajustar_volume(self.para_jogo(e.pos)[0])
                     self.toque.mover("mouse", e.pos)
                 elif e.type == pygame.MOUSEBUTTONUP and e.button == 1:
+                    if self.arrastando_vol == "mouse":
+                        self.arrastando_vol = None
                     self.toque.soltar("mouse")
                 e = pygame.event.Event(e.type, {**e.dict, "pos": self.para_jogo(e.pos), "sintetico": True})
         # --- atalhos globais ---
         if e.type == pygame.KEYDOWN and not self.notas.aberto:
             if e.key == pygame.K_m:
                 self.som.alternar_mudo()
+                return
+            if e.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                self.som.definir_volume(self.som.volume - 0.1)
+                return
+            if e.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                self.som.definir_volume(self.som.volume + 0.1)
+                if self.som.mudo:
+                    self.som.alternar_mudo()
                 return
             if e.key == pygame.K_t and not self.desafio:
                 self.toque.ativo = not self.toque.ativo
@@ -1997,7 +2029,7 @@ class Jogo:
         c = pygame.Rect(60, 388, LARGURA - 120, 150)
         painel(surf, c, borda=(60, 100, 130))
         desenhar_texto(surf, "CONTROLES", f["titulo"], AMARELO, (c.x + 20, c.y + 10))
-        linhas = ["WASD / Setas: mover    E: terminal    N: bloco de notas    P / Esc: pausar    M: som liga/desliga",
+        linhas = ["WASD / Setas: mover   E: terminal   N: bloco de notas   P / Esc: pausar   M: mudo   - / +: volume",
                   "Meta: 12 acertos nas 5 fases (1 + 2 + 2 + 3 + 4).  Tempo: 12:00.  Limite: 5 falhas críticas.",
                   "Errou? Você mantém seus acertos, perde 20 s e o terminal sorteia OUTRA questão da mesma fase."]
         for i, l in enumerate(linhas):
@@ -2104,7 +2136,7 @@ class Jogo:
             fo = self.fontes
             desenhar_texto(self.tela, "PAUSADO", fo["gigante"], CIANO, (LARGURA // 2, 210), centro=True)
             desenhar_texto(self.tela, "O cronômetro está parado.", fo["texto"], BRANCO, (LARGURA // 2, 290), centro=True)
-            desenhar_texto(self.tela, "[Esc / P] Continuar     [Q] Voltar ao menu     [M] Som", fo["peq"], CINZA,
+            desenhar_texto(self.tela, "[Esc / P] Continuar     [Q] Menu     [M] Mudo     [- / +] Volume", fo["peq"], CINZA,
                            (LARGURA // 2, 340), centro=True)
             self.btn_continuar.desenhar(self.tela, fo["titulo"])
             self.btn_menu.desenhar(self.tela, fo["titulo"])
@@ -2121,12 +2153,53 @@ class Jogo:
         if self.som.mudo:
             pygame.draw.line(surf, VERMELHO, (cx + 8, cy - 6), (cx + 16, cy + 6), 3)
             pygame.draw.line(surf, VERMELHO, (cx + 16, cy - 6), (cx + 8, cy + 6), 3)
-        else:
-            pygame.draw.arc(surf, BRANCO, (cx + 2, cy - 6, 10, 12), -1.1, 1.1, 2)
-            pygame.draw.arc(surf, BRANCO, (cx + 2, cy - 11, 18, 22), -1.1, 1.1, 2)
+        else:                                   # "ondas" do alto-falante conforme o volume
+            if self.som.volume > 0.02:
+                pygame.draw.arc(surf, BRANCO, (cx + 2, cy - 6, 10, 12), -1.1, 1.1, 2)
+            if self.som.volume > 0.5:
+                pygame.draw.arc(surf, BRANCO, (cx + 2, cy - 11, 18, 22), -1.1, 1.1, 2)
         if self.r_pausa in botoes:
             for dx in (-6, 3):
                 pygame.draw.rect(surf, BRANCO, (self.r_pausa.centerx + dx, self.r_pausa.centery - 9, 4, 18))
+        self.desenhar_volume(surf)
+
+    # ------------------------------------------------------------ controle de volume
+    def r_volume(self):
+        """Área do controle deslizante na tela atual (coordenadas do jogo) ou None se não aparece."""
+        if self.estado == JOGANDO:
+            return pygame.Rect(LARGURA // 2 - 200, 486, 400, 44) if self.pausado else None
+        if self.estado in (INTRO, CINEMA):
+            return None
+        return pygame.Rect(LARGURA - 8 - 160, 58, 160, 38)        # menu, escolha, vitória, derrota
+
+    def _ajustar_volume(self, x):
+        r = self.r_volume()
+        if not r:
+            return
+        self.som.definir_volume((x - (r.x + 14)) / (r.width - 28))
+        if self.som.mudo and self.som.volume > 0:
+            self.som.alternar_mudo()        # mexer no volume tira do mudo
+
+    def desenhar_volume(self, surf):
+        r = self.r_volume()
+        if not r:
+            return
+        grande = r.width > 300
+        f = self.fontes["texto" if grande else "hud_l"]
+        v = self.som.volume
+        ativo = not self.som.mudo
+        cor = CIANO if ativo else CINZA
+        x0, x1 = r.x + 14, r.right - 14
+        y = r.bottom - (14 if grande else 10)
+        texto = f"Volume: {round(v * 100)}%" + ("" if ativo else "  (mudo)")
+        desenhar_texto(surf, texto, f, BRANCO if grande else CINZA,
+                       (r.centerx, r.y - (22 if grande else -2)), centro=True, sombra=grande)
+        pygame.draw.line(surf, (40, 56, 72), (x0, y), (x1, y), 8 if grande else 6)
+        xk = int(x0 + (x1 - x0) * v)
+        if xk > x0:
+            pygame.draw.line(surf, cor, (x0, y), (xk, y), 8 if grande else 6)
+        pygame.draw.circle(surf, BRANCO, (xk, y), 14 if grande else 9)
+        pygame.draw.circle(surf, cor, (xk, y), 14 if grande else 9, 3)
 
     def rotulo(self, surf, texto, cx, cy, cor, pequeno=False):
         fonte = self.fontes["hud_l"] if pequeno else self.fontes["peq"]
@@ -2267,12 +2340,23 @@ class Jogo:
     async def executar(self):
         """Laço assíncrono: o mesmo código roda no PC e no navegador (pygbag/WebAssembly)."""
         while self.rodando:
-            dt = min(self.relogio.tick(FPS) / 1000.0, 0.05)
+            inicio = time.perf_counter()
+            if EH_WEB:
+                # No navegador, tick(FPS) espera "girando" a CPU na mesma thread que alimenta o
+                # áudio, e o som picota. Aqui só medimos o tempo; quem espera é o asyncio, abaixo.
+                dt = min(self.relogio.tick() / 1000.0, 0.1)
+            else:
+                dt = min(self.relogio.tick(FPS) / 1000.0, 0.05)
             for e in pygame.event.get():
                 self.tratar_evento(e)
             self.atualizar(dt)
             self.desenhar()
-            await asyncio.sleep(0)      # devolve o controle ao navegador a cada quadro
+            if EH_WEB:
+                # devolve o controle ao navegador pelo resto do quadro (o áudio roda nesse intervalo)
+                sobra = 1.0 / FPS - (time.perf_counter() - inicio)
+                await asyncio.sleep(max(0.0, sobra))
+            else:
+                await asyncio.sleep(0)
         pygame.quit()
 
 

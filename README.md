@@ -50,6 +50,7 @@ ou **sobrecarregar o reator**.
 | `Esc` | Sair do terminal (a questão do terminal é mantida); fora do terminal, pausa |
 | `P` | Pausar / continuar (o cronômetro para). No pause, `Q` volta ao menu |
 | `M` | Liga/desliga o som (também pelo botão de alto-falante no canto superior direito) |
+| `-` / `+` | Diminui / aumenta o volume. Há também um **controle deslizante de volume** no menu, nas telas finais e na tela de pausa |
 | `T` | Liga/desliga os controles de toque na tela (útil para testar no PC) |
 
 O **bloco de notas** é uma mini-calculadora: digite uma expressão como `8!/(3!*5!)` e pressione `Enter` (ou toque em
