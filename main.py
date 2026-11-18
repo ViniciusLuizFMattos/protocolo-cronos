@@ -1352,7 +1352,8 @@ class Botao:
 # JOGO
 # ----------------------------------------------------------------------------
 class Jogo:
-    INTRO_TOTAL = 3.8
+    INTRO_ENTRADA = 0.7     # fade de entrada da apresentação da fase (s)
+    INTRO_SAIDA = 0.5       # fade de saída, depois do toque/Enter (s)
 
     def __init__(self):
         pygame.mixer.pre_init(FREQ_AUDIO, -16, 1, BUFFER_AUDIO)
@@ -1550,7 +1551,7 @@ class Jogo:
         self.carregar_fase(0)
         if iniciar:
             self.estado = INTRO
-            self.intro_t = 0.0
+            self.intro_t, self.intro_saida = 0.0, None
             self.som.tocar("fase")
 
     def carregar_fase(self, idx):
@@ -1716,8 +1717,8 @@ class Jogo:
         elif self.estado == INTRO:
             pular = (e.type == pygame.KEYDOWN and e.key in (pygame.K_RETURN, pygame.K_SPACE)) or \
                     (e.type == pygame.MOUSEBUTTONDOWN and e.button == 1)
-            if pular and self.intro_t > 0.7:
-                self.intro_t = max(self.intro_t, self.INTRO_TOTAL - 0.7)
+            if pular and self.intro_t > 0.5 and self.intro_saida is None:
+                self.intro_saida = 0.0          # só sai da apresentação quando o jogador pede
         elif self.estado == JOGANDO:
             if self.pausado:
                 if (e.type == pygame.KEYDOWN and e.key in (pygame.K_ESCAPE, pygame.K_p, pygame.K_RETURN)) \
@@ -1774,8 +1775,10 @@ class Jogo:
                 b[0], b[1] = random.uniform(0, LARGURA), ALTURA + 10
         if self.estado == INTRO:
             self.intro_t += dt
-            if self.intro_t >= self.INTRO_TOTAL:
-                self.estado = JOGANDO
+            if self.intro_saida is not None:
+                self.intro_saida += dt
+                if self.intro_saida >= self.INTRO_SAIDA:
+                    self.estado = JOGANDO
         elif self.estado == JOGANDO and not self.pausado:
             self.atualizar_jogo(dt)
         elif self.estado == CINEMA:
@@ -1850,8 +1853,7 @@ class Jogo:
             b[1] += 95 * dt
             b[0] += math.sin(t * 3 + b[2]) * 10 * dt
         self.cinema_bolhas = [b for b in self.cinema_bolhas if b[1] < ALTURA + 10][-140:]
-        if t >= CINEMA_TOTAL:
-            self.encerrar(VITORIA)
+        # ao terminar, a cena fica parada na superfície esperando o toque/Enter (não avança sozinha)
 
     def _desenhar_estacao(self, s, sy, luzes, brilho):
         """Silhueta da Acheron-4 vista de lado."""
@@ -1947,10 +1949,12 @@ class Jogo:
         desenhar_paragrafo(s, texto, self.fontes["texto"], BRANCO, r.x + 24, r.y + 12, r.width - 48, espaco=3)
         titulo = FINAIS[self.final_escolhido][0]
         desenhar_texto(s, titulo, self.fontes["titulo"], AMARELO, (LARGURA // 2, 14), centro=True)
-        if t > 1.0:
+        if t >= CINEMA_TOTAL:                                      # fim da cena: espera o jogador
+            cor = BRANCO if int(self.t * 2) % 2 == 0 else AMARELO
+            desenhar_texto(s, "Toque na tela ou aperte [Enter] para ver o resultado", self.fontes["titulo"], cor,
+                           (LARGURA // 2, ALTURA - 52), centro=True)
+        elif t > 1.0:
             desenhar_texto(s, "[Enter] ou toque para pular", self.fontes["peq"], CINZA, (LARGURA // 2, ALTURA - 30), centro=True)
-        if t > CINEMA_TOTAL - 1.2:                                 # fade para a tela de vitória
-            s.blit(self.veu(int(255 * min(1.0, (t - (CINEMA_TOTAL - 1.2)) / 1.2)) // 8 * 8), (0, 0))
         ox = oy = 0
         if self.tremor > 0:
             amp = int(14 * self.tremor)
@@ -1999,7 +2003,7 @@ class Jogo:
             else:
                 self.carregar_fase(self.fase_idx + 1)
                 self.estado = INTRO
-                self.intro_t = 0.0
+                self.intro_t, self.intro_saida = 0.0, None
                 self.som.tocar("fase")
         elif not f.porta.aberta and self.jogador.rect.inflate(10, 10).colliderect(f.porta.rect) and self.aviso[1] <= 0:
             self.avisar(f"Porta selada. Terminais restantes: {f.meta - f.acertos}.", 2.0)
@@ -2049,16 +2053,16 @@ class Jogo:
         desenhar_texto(surf, f"Acertos necessários para abrir a porta: {info['meta']}", f["titulo"], VERDE, (LARGURA // 2, 440), centro=True)
         restante = sum(FASES[i]["meta"] for i in range(self.fase_idx))
         desenhar_texto(surf, f"Progresso global: {restante}/{TOTAL_ACERTOS}", f["texto"], CINZA, (LARGURA // 2, 480), centro=True)
-        if self.intro_t > 0.7:
-            desenhar_texto(surf, "[Enter] ou toque na tela para continuar", f["peq"], CINZA, (LARGURA // 2, 580), centro=True)
-        # fade
-        a = 255
-        if self.intro_t < 0.7:
-            a = int(255 * (1 - self.intro_t / 0.7))
-        elif self.intro_t > self.INTRO_TOTAL - 0.7:
-            a = int(255 * (self.intro_t - (self.INTRO_TOTAL - 0.7)) / 0.7)
-        else:
-            a = 0
+        if self.intro_t > 0.5:          # a tela espera o jogador: nada avança sozinho
+            cor = BRANCO if int(self.t * 2) % 2 == 0 else CINZA
+            desenhar_texto(surf, "Toque na tela ou aperte [Enter] para começar", f["titulo"], cor,
+                           (LARGURA // 2, 560), centro=True)
+        # fade de entrada e, depois do toque, de saída
+        a = 0
+        if self.intro_saida is not None:
+            a = int(255 * min(1.0, self.intro_saida / self.INTRO_SAIDA))
+        elif self.intro_t < self.INTRO_ENTRADA:
+            a = int(255 * (1 - self.intro_t / self.INTRO_ENTRADA))
         if a > 0:
             surf.blit(self.veu(min(255, a // 8 * 8)), (0, 0))
 

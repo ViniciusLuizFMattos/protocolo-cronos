@@ -111,6 +111,16 @@ def digitar(jogo, txt):
         tecla(jogo, getattr(pygame, "K_" + ch), ch)
 
 
+def passar_intro(jogo):
+    """A apresentação da fase não avança sozinha: espera, confere e aperta Enter."""
+    assert jogo.estado == main.INTRO
+    passos(jogo, 6 * 60)                  # 6 s parado: tem que continuar na apresentação
+    assert jogo.estado == main.INTRO, "a apresentação da fase avançou sozinha"
+    tecla(jogo, pygame.K_RETURN)
+    passos(jogo, int(main.Jogo.INTRO_SAIDA * 60) + 5)
+    assert jogo.estado == main.JOGANDO
+
+
 def clique(jogo, pos):
     jogo.tratar_evento(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=pos, button=1, touch=False))
     jogo.tratar_evento(pygame.event.Event(pygame.MOUSEBUTTONUP, pos=pos, button=1, touch=False))
@@ -134,7 +144,7 @@ def testar_fluxo(salvar_dir=None):
     assert jogo.estado == main.INTRO
     passos(jogo, 120)
     salvar(jogo, salvar_dir, "2_intro")
-    passos(jogo, int(main.Jogo.INTRO_TOTAL * 60))
+    passar_intro(jogo)
     assert jogo.estado == main.JOGANDO
     vistas = set()
     erros_esperados = 0
@@ -194,7 +204,7 @@ def testar_fluxo(salvar_dir=None):
                 break
         if idx < 4:
             assert jogo.estado == main.INTRO, f"não avançou da fase {idx + 1}"
-            passos(jogo, int(main.Jogo.INTRO_TOTAL * 60) + 5)
+            passar_intro(jogo)
             assert jogo.estado == main.JOGANDO
     assert jogo.estado == main.ESCOLHA_FINAL
     assert jogo.acertos_total == 12 and jogo.erros == erros_esperados
@@ -211,17 +221,20 @@ def testar_fluxo(salvar_dir=None):
     assert jogo.estado == main.VITORIA
     passos(jogo, 90)
     salvar(jogo, salvar_dir, "9_vitoria")
-    # final A completo, sem pular: termina sozinho na tela de vitória
+    # final A completo, sem pular: ao terminar, a cena ESPERA o jogador (não avança sozinha)
     jogo.iniciar_cinema("fugir")
     passos(jogo, int(8 * 60))
     salvar(jogo, salvar_dir, "9c_cinema_fugir")
-    passos(jogo, int((main.CINEMA_TOTAL - 8 + 0.5) * 60))
+    passos(jogo, int((main.CINEMA_TOTAL - 8 + 3) * 60))
+    assert jogo.estado == main.CINEMA, "a cinemática avançou sozinha"
+    salvar(jogo, salvar_dir, "9d_cinema_fim_espera")
+    tecla(jogo, pygame.K_RETURN)
     assert jogo.estado == main.VITORIA and jogo.final_escolhido == "fugir"
     assert jogo.classificacao()[0] in "SABC"
     # reinício
     tecla(jogo, pygame.K_RETURN)
     assert jogo.estado == main.INTRO and jogo.acertos_total == 0 and jogo.erros == 0
-    passos(jogo, int(main.Jogo.INTRO_TOTAL * 60) + 5)
+    passar_intro(jogo)
     # derrota por erros
     jogo.fase.terminais[0].questao = None
     jogo.jogador.rect.midbottom = (jogo.fase.terminais[0].rect.centerx, jogo.fase.terminais[0].rect.bottom + 22)
@@ -236,7 +249,7 @@ def testar_fluxo(salvar_dir=None):
     passos(jogo, 2)
     salvar(jogo, salvar_dir, "10_derrota")
     tecla(jogo, pygame.K_r, "r")
-    passos(jogo, int(main.Jogo.INTRO_TOTAL * 60) + 5)
+    passar_intro(jogo)
     assert jogo.estado == main.JOGANDO
     # derrota por tempo
     jogo.tempo = 0.01
@@ -244,7 +257,7 @@ def testar_fluxo(salvar_dir=None):
     assert jogo.estado == main.DERROTA
     # bloco de notas
     tecla(jogo, pygame.K_r, "r")
-    passos(jogo, int(main.Jogo.INTRO_TOTAL * 60) + 5)
+    passar_intro(jogo)
     tecla(jogo, pygame.K_n, "n")
     assert jogo.notas.aberto
     for ch in "8!/(3!*5!)":
