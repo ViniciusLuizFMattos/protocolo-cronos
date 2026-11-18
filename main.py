@@ -53,8 +53,6 @@ BUFFER_AUDIO = 4096 if EH_WEB else 2048
 # No PC usamos 44,1 kHz (taxa nativa das placas de som; evita reamostragem com estalos).
 # No navegador fica em 22 kHz: metade do trabalho para gerar os sons em WebAssembly.
 FREQ_AUDIO = 22050 if EH_WEB else 44100
-if EH_WEB:
-    FPS = 30      # no navegador/celular: menos quadros por segundo, mais folga para o áudio
 
 # Em telas mais largas que 16:10 (celular deitado) o jogo 1024x640 fica centralizado e as
 # faixas laterais recebem os controles de toque. DESLOCAMENTO_X = largura de cada faixa.
@@ -2344,10 +2342,9 @@ class Jogo:
     async def executar(self):
         """Laço assíncrono: o mesmo código roda no PC e no navegador (pygbag/WebAssembly)."""
         while self.rodando:
-            inicio = time.perf_counter()
             if EH_WEB:
                 # No navegador, tick(FPS) espera "girando" a CPU na mesma thread que alimenta o
-                # áudio, e o som picota. Aqui só medimos o tempo; quem espera é o asyncio, abaixo.
+                # áudio, e o som picota. Aqui só medimos o tempo; o ritmo vem do asyncio, abaixo.
                 dt = min(self.relogio.tick() / 1000.0, 0.1)
             else:
                 dt = min(self.relogio.tick(FPS) / 1000.0, 0.05)
@@ -2355,12 +2352,9 @@ class Jogo:
                 self.tratar_evento(e)
             self.atualizar(dt)
             self.desenhar()
-            if EH_WEB:
-                # devolve o controle ao navegador pelo resto do quadro (o áudio roda nesse intervalo)
-                sobra = 1.0 / FPS - (time.perf_counter() - inicio)
-                await asyncio.sleep(max(0.0, sobra))
-            else:
-                await asyncio.sleep(0)
+            # No pygbag, sleep(0) espera o próximo quadro da tela (requestAnimationFrame, ~60 Hz)
+            # devolvendo o controle ao navegador, sem gastar CPU: fluido e o áudio não fica sem tempo.
+            await asyncio.sleep(0)
         pygame.quit()
 
 
