@@ -47,6 +47,15 @@ VEL_JOGADOR = 175               # pixels por segundo
 TOTAL_ACERTOS = 12
 EH_WEB = sys.platform == "emscripten"   # rodando no navegador (pygbag / WebAssembly)
 
+# Buffer de áudio maior = som sem "picotar" quando um quadro demora. No navegador o áudio roda na
+# mesma thread do jogo, então precisa de mais folga (4096 amostras ≈ 0,19 s a 22 kHz; 2048 ≈ 46 ms no PC).
+BUFFER_AUDIO = 4096 if EH_WEB else 2048
+# No PC usamos 44,1 kHz (taxa nativa das placas de som; evita reamostragem com estalos).
+# No navegador fica em 22 kHz: metade do trabalho para gerar os sons em WebAssembly.
+FREQ_AUDIO = 22050 if EH_WEB else 44100
+if EH_WEB:
+    FPS = 40      # no navegador/celular: menos quadros por segundo, mais folga para o áudio
+
 # Em telas mais largas que 16:10 (celular deitado) o jogo 1024x640 fica centralizado e as
 # faixas laterais recebem os controles de toque. DESLOCAMENTO_X = largura de cada faixa.
 DESLOCAMENTO_X = 0
@@ -195,8 +204,38 @@ CINEMA_TOTAL = 16.0       # duração da cinemática de vitória (segundos)
 # ----------------------------------------------------------------------------
 # UTILITÁRIOS DE TEXTO
 # ----------------------------------------------------------------------------
+# Caches: o mesmo texto/painel é desenhado em todo quadro; renderizar uma vez só alivia muito a CPU
+# (no navegador isso evita que o áudio fique sem dados e "picote").
+_CACHE_TEXTO = {}
+_CACHE_QUEBRA = {}
+_CACHE_PAINEL = {}
+
+
+def _cache_limitado(cache, limite=800):
+    if len(cache) > limite:
+        cache.clear()
+    return cache
+
+
+def render_texto(texto, fonte, cor):
+    """fonte.render com cache."""
+    chave = (texto, id(fonte), cor)
+    img = _CACHE_TEXTO.get(chave)
+    if img is None:
+        img = _cache_limitado(_CACHE_TEXTO)[chave] = fonte.render(texto, True, cor)
+    return img
+
+
 def quebrar_texto(texto, fonte, largura):
-    """Quebra automática de linha (word wrap) respeitando '\\n'."""
+    """Quebra automática de linha (word wrap) respeitando '\\n' (com cache)."""
+    chave = (texto, id(fonte), largura)
+    if chave in _CACHE_QUEBRA:
+        return _CACHE_QUEBRA[chave]
+    _cache_limitado(_CACHE_QUEBRA, 300)[chave] = linhas = _quebrar(texto, fonte, largura)
+    return linhas
+
+
+def _quebrar(texto, fonte, largura):
     linhas = []
     for paragrafo in texto.split("\n"):
         atual = ""
@@ -213,14 +252,14 @@ def quebrar_texto(texto, fonte, largura):
 
 
 def desenhar_texto(surf, texto, fonte, cor, pos, centro=False, sombra=True):
-    img = fonte.render(texto, True, cor)
+    img = render_texto(texto, fonte, cor)
     r = img.get_rect()
     if centro:
         r.midtop = pos
     else:
         r.topleft = pos
     if sombra:
-        surf.blit(fonte.render(texto, True, (0, 0, 0)), r.move(1, 2))
+        surf.blit(render_texto(texto, fonte, (0, 0, 0)), r.move(1, 2))
     surf.blit(img, r)
     return r
 
@@ -237,9 +276,13 @@ def desenhar_paragrafo(surf, texto, fonte, cor, x, y, largura, espaco=4, centro=
 
 
 def painel(surf, rect, cor=(10, 20, 32), borda=CIANO, alfa=235, raio=12):
-    s = pygame.Surface(rect.size, pygame.SRCALPHA)
-    pygame.draw.rect(s, (*cor, alfa), s.get_rect(), border_radius=raio)
-    pygame.draw.rect(s, (*borda, 255), s.get_rect(), 2, border_radius=raio)
+    chave = (rect.size, cor, borda, alfa, raio)
+    s = _CACHE_PAINEL.get(chave)
+    if s is None:
+        s = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(s, (*cor, alfa), s.get_rect(), border_radius=raio)
+        pygame.draw.rect(s, (*borda, 255), s.get_rect(), 2, border_radius=raio)
+        _cache_limitado(_CACHE_PAINEL, 120)[chave] = s
     surf.blit(s, rect.topleft)
 
 
@@ -342,7 +385,7 @@ class Som:
     A síntese é feita aos poucos (alguns milissegundos por quadro, via `preparar`),
     para o jogo abrir instantaneamente, inclusive no navegador/celular.
     """
-    SR = 22050
+    SR = FREQ_AUDIO
     VOL_MUSICA = 0.32
 
     def __init__(self):
@@ -353,7 +396,7 @@ class Som:
         self._gerador = None
         self._musica_tocando = False
         try:
-            pygame.mixer.init(frequency=self.SR, size=-16, channels=1, buffer=512)
+            pygame.mixer.init(frequency=self.SR, size=-16, channels=1, buffer=BUFFER_AUDIO)
             ini = pygame.mixer.get_init()
             self.SR, self.canais = ini[0], ini[2]   # usa a taxa que o dispositivo aceitou
             self._gerador = self._gerar()
@@ -391,33 +434,45 @@ class Som:
 
     # --- geração ---
     GANHO = 0.42     # volume geral: deixa folga para música + efeitos somados não distorcerem
+    PEDACO = 1500    # amostras sintetizadas por vez antes de devolver o controle ao jogo
+
+    # Todas as funções de síntese são geradores: fazem um pedaço, dão `yield` (o jogo desenha
+    # um quadro) e continuam depois. O resultado vem pelo `return` (usado com `yield from`).
 
     def _criar(self, amostras):
         # normaliza só se passar de 1.0 e aplica o ganho geral, depois converte para int16
         k = 32000 * self.GANHO / max(1.0, max(map(abs, amostras)))
-        mono = [int(a * k) for a in amostras]
-        if self.canais == 2:
-            mono = [v for v in mono for _ in (0, 1)]
-        return pygame.mixer.Sound(buffer=array.array("h", mono).tobytes())
+        dados = array.array("h")
+        p = self.PEDACO * 4
+        for i in range(0, len(amostras), p):
+            bloco = [int(a * k) for a in amostras[i:i + p]]
+            if self.canais == 2:
+                bloco = [v for v in bloco for _ in (0, 1)]
+            dados.extend(bloco)
+            yield
+        return pygame.mixer.Sound(buffer=dados.tobytes())
 
     def _tom(self, f0, dur, vol=0.4, forma="sin", f1=None, decaimento=1.5):
         n = int(self.SR * dur)
         fase = 0.0
         out = []
+        sin, tau, sr = math.sin, 2 * math.pi, self.SR
+        f1 = f1 if f1 else f0
         for i in range(n):
-            t = i / self.SR
-            f = f0 + ((f1 if f1 else f0) - f0) * t / dur
-            fase += 2 * math.pi * f / self.SR
+            t = i / sr
+            fase += tau * (f0 + (f1 - f0) * t / dur) / sr
             if forma == "sin":
-                s = math.sin(fase)
+                s = sin(fase)
             elif forma == "suave":       # timbre "metálico" sem a aspereza da onda serra
-                s = math.sin(fase) * 0.8 + math.sin(fase * 2) * 0.25 + math.sin(fase * 3) * 0.12
+                s = sin(fase) * 0.8 + sin(fase * 2) * 0.25 + sin(fase * 3) * 0.12
             elif forma == "serra":
-                s = 2 * ((fase / (2 * math.pi)) % 1.0) - 1
+                s = 2 * ((fase / tau) % 1.0) - 1
             else:
-                s = 1.0 if math.sin(fase) >= 0 else -1.0
+                s = 1.0 if sin(fase) >= 0 else -1.0
             ataque = min(1.0, t / 0.008)                 # ataque suave evita "clique" no início
             out.append(s * vol * ataque * (1 - t / dur) ** decaimento)
+            if i % self.PEDACO == 0:
+                yield
         return out
 
     def _ruido(self, dur, vol=0.3, suav=0.5, decaimento=3.0):
@@ -426,41 +481,46 @@ class Som:
         for i in range(n):
             ant = ant * suav + random.uniform(-1, 1) * (1 - suav)
             out.append(ant * vol * (1 - i / n) ** decaimento)
+            if i % self.PEDACO == 0:
+                yield
         return out
 
-    @staticmethod
-    def _somar(*listas):
+    def _somar(self, *listas):
         n = max(len(l) for l in listas)
-        return [sum(l[i] for l in listas if i < len(l)) for i in range(n)]
+        out = [0.0] * n
+        for l in listas:
+            for i, v in enumerate(l):
+                out[i] += v
+                if i % (self.PEDACO * 4) == 0:
+                    yield
+        return out
 
     def _gerar(self):
-        """Gerador: cada `next()` produz um pedaço do áudio (efeitos primeiro, música por último)."""
-        self.sons["bipe"] = self._criar(self._tom(880, 0.09, 0.5, "sin", decaimento=1.2))
-        yield
-        self.sons["passo"] = self._criar(self._ruido(0.07, 0.6, 0.9, 4.0))
-        yield
-        self.sons["acerto"] = self._criar(
-            self._tom(523, 0.11, 0.6) + self._tom(659, 0.11, 0.6) + self._tom(784, 0.11, 0.6)
-            + self._tom(1047, 0.30, 0.6, decaimento=2.0))
-        yield
+        """Gera todos os sons aos poucos (efeitos primeiro, música, e por fim os sons do final)."""
+        tom, ruido, somar, criar = self._tom, self._ruido, self._somar, self._criar
+        self.sons["bipe"] = yield from criar((yield from tom(880, 0.09, 0.5, "sin", decaimento=1.2)))
+        self.sons["passo"] = yield from criar((yield from ruido(0.07, 0.6, 0.9, 4.0)))
+        acerto = []
+        for f, d in ((523, 0.11), (659, 0.11), (784, 0.11)):
+            acerto += yield from tom(f, d, 0.6)
+        acerto += yield from tom(1047, 0.30, 0.6, decaimento=2.0)
+        self.sons["acerto"] = yield from criar(acerto)
         alarme = []
         for k in range(4):
-            alarme += self._tom(330 if k % 2 == 0 else 247, 0.16, 0.7, "suave", decaimento=0.8)
-        self.sons["erro"] = self._criar(alarme)
-        yield
-        self.sons["fase"] = self._criar(self._tom(220, 0.5, 0.6, f1=440) + self._tom(440, 0.4, 0.6, f1=660))
-        yield
-        self.sons["porta"] = self._criar(self._somar(
-            self._tom(90, 1.4, 0.6, "sin", f1=38, decaimento=0.8),
-            self._ruido(1.4, 0.2, 0.93, 1.2),
-            [0.0] * 200 + self._tom(260, 0.12, 0.35, "suave", f1=120)))
-        yield
-        self.sons["derrota"] = self._criar(self._tom(220, 1.2, 0.7, "suave", f1=55, decaimento=0.7))
-        yield
-        self.sons["vitoria"] = self._criar(
-            self._tom(392, 0.15, 0.6) + self._tom(523, 0.15, 0.6) + self._tom(659, 0.15, 0.6)
-            + self._tom(784, 0.5, 0.6, decaimento=1.2))
-        yield
+            alarme += yield from tom(330 if k % 2 == 0 else 247, 0.16, 0.7, "suave", decaimento=0.8)
+        self.sons["erro"] = yield from criar(alarme)
+        fase = (yield from tom(220, 0.5, 0.6, f1=440)) + (yield from tom(440, 0.4, 0.6, f1=660))
+        self.sons["fase"] = yield from criar(fase)
+        ronco = yield from tom(90, 1.4, 0.6, "sin", f1=38, decaimento=0.8)
+        chiado = yield from ruido(1.4, 0.2, 0.93, 1.2)
+        trava = [0.0] * 200 + (yield from tom(260, 0.12, 0.35, "suave", f1=120))
+        self.sons["porta"] = yield from criar((yield from somar(ronco, chiado, trava)))
+        self.sons["derrota"] = yield from criar((yield from tom(220, 1.2, 0.7, "suave", f1=55, decaimento=0.7)))
+        vit = []
+        for f, d in ((392, 0.15), (523, 0.15), (659, 0.15)):
+            vit += yield from tom(f, d, 0.6)
+        vit += yield from tom(784, 0.5, 0.6, decaimento=1.2)
+        self.sons["vitoria"] = yield from criar(vit)
         # Música de fundo: drone de sonar em loop (4 s = ciclos inteiros de 55 Hz, 82,5 Hz e 0,5 Hz).
         # O pulso (ping + batida grave) é somado nos instantes 0 s e 2 s.
         sr, sin, tau, exp = self.SR, math.sin, 2 * math.pi, math.exp
@@ -470,35 +530,26 @@ class Som:
         for i in range(meio):
             d = i / sr
             pulso.append(sin(tau * 900 * d) * 0.10 * exp(-d * 3.2) + sin(tau * 48 * d) * 0.30 * exp(-d * 6.0))
-            if i % 4000 == 0:
+            if i % self.PEDACO == 0:
                 yield
         sonar = []
         for i in range(n):
             t = i / sr
             s = (sin(tau * 55 * t) * 0.30 + sin(tau * 82.5 * t) * 0.14) * (0.75 + 0.25 * sin(tau * 0.5 * t))
             sonar.append(s + pulso[i % meio])
-            if i % 4000 == 0:
+            if i % self.PEDACO == 0:
                 yield
-        self.sons["sonar"] = self._criar(sonar)
-        yield
+        self.sons["sonar"] = yield from criar(sonar)
         # Sons do final (gerados por último: só são usados no fim da partida)
-        # explosão do reator (final B): estrondo grave + chiado que decai devagar
-        sr = self.SR
-        estrondo = self._tom(70, 2.2, 0.8, "sin", f1=25, decaimento=1.4)
-        yield
-        chiado = self._ruido(2.2, 0.55, 0.97, 2.0)
-        yield
-        self.sons["explosao"] = self._criar(self._somar(estrondo, chiado))
-        yield
-        # tema da vitória: melodia + nota grave de apoio
+        estrondo = yield from tom(70, 2.2, 0.8, "sin", f1=25, decaimento=1.4)
+        ruido_exp = yield from ruido(2.2, 0.55, 0.97, 2.0)
+        self.sons["explosao"] = yield from criar((yield from somar(estrondo, ruido_exp)))
         notas = [(523, .18), (659, .18), (784, .18), (1047, .36), (988, .18), (784, .18), (880, .45), (1047, .9)]
         melodia = []
         for f, d in notas:
-            melodia += self._tom(f, d, 0.55, "suave", decaimento=0.9)
-            yield
-        base = self._tom(131, len(melodia) / sr, 0.35, "sin", decaimento=0.6)
-        yield
-        self.sons["tema"] = self._criar(self._somar(melodia, base))
+            melodia += yield from tom(f, d, 0.55, "suave", decaimento=0.9)
+        base = yield from tom(131, len(melodia) / sr, 0.35, "sin", decaimento=0.6)
+        self.sons["tema"] = yield from criar((yield from somar(melodia, base)))
 
     # --- uso ---
     def tocar(self, nome, volume=0.55):
@@ -910,7 +961,7 @@ class TecladoTela:
                 cor = tuple((c + 200) // 2 for c in fundo)
             pygame.draw.rect(surf, cor, rect, border_radius=6)
             pygame.draw.rect(surf, borda, rect, 2, border_radius=6)
-            img = fonte.render(rotulo, True, (150, 140, 120) if desligada else texto)
+            img = render_texto(rotulo, fonte, (150, 140, 120) if desligada else texto)
             surf.blit(img, img.get_rect(center=rect.center))
 
 
@@ -1257,13 +1308,13 @@ class ControlesToque:
         pygame.draw.circle(camada, (238, 228, 190, 170), cn, rn)
         pygame.draw.circle(camada, (255, 255, 255, 190), cn, rn, 3)
         surf.blit(camada, (0, 0))
-        img = fontes["grande"].render("E", True, (20, 20, 20))
+        img = render_texto("E", fontes["grande"], (20, 20, 20))
         surf.blit(img, img.get_rect(center=(ce[0], ce[1] - 8)))
-        img = fontes["peq"].render("ACESSAR", True, (20, 20, 20))
+        img = render_texto("ACESSAR", fontes["peq"], (20, 20, 20))
         surf.blit(img, img.get_rect(center=(ce[0], ce[1] + 22)))
-        img = fontes["titulo"].render("N", True, (60, 40, 20))
+        img = render_texto("N", fontes["titulo"], (60, 40, 20))
         surf.blit(img, img.get_rect(center=(cn[0], cn[1] - 6)))
-        img = fontes["hud_l"].render("NOTAS", True, (60, 40, 20))
+        img = render_texto("NOTAS", fontes["hud_l"], (60, 40, 20))
         surf.blit(img, img.get_rect(center=(cn[0], cn[1] + 16)))
 
 
@@ -1294,7 +1345,7 @@ class Jogo:
     INTRO_TOTAL = 3.8
 
     def __init__(self):
-        pygame.mixer.pre_init(22050, -16, 1, 512)
+        pygame.mixer.pre_init(FREQ_AUDIO, -16, 1, BUFFER_AUDIO)
         pygame.init()
         pygame.display.set_caption("Protocolo Cronos: O Bunker Submerso")
         # self.display = janela/canvas real (pode ser mais larga que o jogo no celular deitado)
@@ -2079,12 +2130,10 @@ class Jogo:
 
     def rotulo(self, surf, texto, cx, cy, cor, pequeno=False):
         fonte = self.fontes["hud_l"] if pequeno else self.fontes["peq"]
-        img = fonte.render(texto, True, cor)
+        img = render_texto(texto, fonte, cor)
         r = img.get_rect(center=(cx, cy))
         fundo = r.inflate(10, 4)
-        s = pygame.Surface(fundo.size, pygame.SRCALPHA)
-        s.fill((0, 0, 0, 170))
-        surf.blit(s, fundo.topleft)
+        painel(surf, fundo, cor=(0, 0, 0), borda=(0, 0, 0), alfa=170, raio=4)
         surf.blit(img, r)
 
     def desenhar_escolha(self, surf):
@@ -2115,7 +2164,7 @@ class Jogo:
             pygame.draw.circle(surf, cor, (int(x), int(y)), 3 if vida > 0.5 else 2)
         titulo, corpo = FINAIS[self.final_escolhido]
         pulso = 1 + 0.04 * math.sin(self.t * 3)
-        img = f["gigante"].render("VITÓRIA!", True, VERDE)
+        img = render_texto("VITÓRIA!", f["gigante"], VERDE)
         img = pygame.transform.smoothscale(img, (int(img.get_width() * pulso), int(img.get_height() * pulso)))
         surf.blit(img, img.get_rect(midtop=(LARGURA // 2, 12)))
         desenhar_texto(surf, titulo, f["grande"], AMARELO, (LARGURA // 2, 80), centro=True)
@@ -2136,7 +2185,7 @@ class Jogo:
         for i, (k, v) in enumerate(linhas):
             yy = r.y + 16 + i * 37
             desenhar_texto(surf, k, f["titulo"], CINZA, (r.x + 30, yy))
-            img = f["titulo"].render(v, True, AMARELO if k == "Pontuação" else BRANCO)
+            img = render_texto(v, f["titulo"], AMARELO if k == "Pontuação" else BRANCO)
             surf.blit(img, img.get_rect(topright=(r.right - 30, yy)))
         # classificação
         rc = pygame.Rect(644, 296, 300, 210)
@@ -2145,7 +2194,7 @@ class Jogo:
         centro = (rc.centerx, rc.y + 94)
         pygame.draw.circle(surf, (10, 20, 32), centro, 52)
         pygame.draw.circle(surf, cor, centro, 52, 4)
-        img = f["gigante"].render(letra, True, cor)
+        img = render_texto(letra, f["gigante"], cor)
         surf.blit(img, img.get_rect(center=centro))
         desenhar_paragrafo(surf, rotulo, f["titulo"], BRANCO, rc.x + 10, rc.y + 156, rc.width - 20, espaco=0, centro=True)
         self.btn_novo.desenhar(surf, f["titulo"])
