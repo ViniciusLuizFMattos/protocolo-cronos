@@ -58,7 +58,7 @@ def mouse_jogo():
     return x - DESLOCAMENTO_X, y
 
 # Estados do jogo
-MENU, INTRO, JOGANDO, ESCOLHA_FINAL, VITORIA, DERROTA = range(6)
+MENU, INTRO, JOGANDO, ESCOLHA_FINAL, VITORIA, DERROTA, CINEMA = range(7)
 
 # Cores
 BRANCO = (235, 240, 245)
@@ -164,6 +164,32 @@ FINAIS = {
                       "aniquila o organismo e as portas que o prendiam. Na última contagem regressiva, a cápsula "
                       "escapa. Acheron-4 deixa de existir, e a ameaça também."),
 }
+
+# Legendas da cinemática final (uma a cada ~3,9 s)
+LEGENDAS_FINAL = {
+    "fugir": [
+        "A escotilha se fecha. A cápsula Cronos se desprende da estação e começa a subir.",
+        "Lá embaixo, as luzes de Acheron-4 se apagam uma a uma...",
+        "...mas algo ainda observa da escuridão. As travas que você quebrou com Matemática agora o mantêm preso.",
+        "3.000 metros acima, a luz do sol atravessa a água. Você chegou à superfície.",
+    ],
+    "sobrecarregar": [
+        "Toda a energia flui para o núcleo. O reator começa a gritar.",
+        "A cápsula dispara no exato instante em que o Pulso Cronos se forma.",
+        "Uma onda de luz varre o abismo. O organismo e a estação deixam de existir.",
+        "Na superfície, o mar se acalma. A ameaça acabou, e você sobreviveu.",
+    ],
+}
+
+# Epílogo exibido na tela de vitória, depois da cinemática
+EPILOGOS = {
+    "fugir": "Os dados dos protocolos chegam à superfície. A Acheron-4 vira zona proibida, e o organismo "
+             "continua lá embaixo, preso pelas mesmas contas que você resolveu.",
+    "sobrecarregar": "Nenhum vestígio do organismo é encontrado. O seu relatório vira material de estudo: "
+                     "contar possibilidades foi o que salvou a missão.",
+}
+
+CINEMA_TOTAL = 16.0       # duração da cinemática de vitória (segundos)
 
 
 # ----------------------------------------------------------------------------
@@ -317,7 +343,7 @@ class Som:
     para o jogo abrir instantaneamente, inclusive no navegador/celular.
     """
     SR = 22050
-    VOL_MUSICA = 0.45
+    VOL_MUSICA = 0.32
 
     def __init__(self):
         self.ativo = False
@@ -364,9 +390,11 @@ class Som:
         return self.mudo
 
     # --- geração ---
+    GANHO = 0.42     # volume geral: deixa folga para música + efeitos somados não distorcerem
+
     def _criar(self, amostras):
-        # normaliza só se passar de 1.0 (evita clipping) e converte para int16
-        k = 32000 / max(1.0, max(map(abs, amostras)))
+        # normaliza só se passar de 1.0 e aplica o ganho geral, depois converte para int16
+        k = 32000 * self.GANHO / max(1.0, max(map(abs, amostras)))
         mono = [int(a * k) for a in amostras]
         if self.canais == 2:
             mono = [v for v in mono for _ in (0, 1)]
@@ -382,11 +410,13 @@ class Som:
             fase += 2 * math.pi * f / self.SR
             if forma == "sin":
                 s = math.sin(fase)
+            elif forma == "suave":       # timbre "metálico" sem a aspereza da onda serra
+                s = math.sin(fase) * 0.8 + math.sin(fase * 2) * 0.25 + math.sin(fase * 3) * 0.12
             elif forma == "serra":
                 s = 2 * ((fase / (2 * math.pi)) % 1.0) - 1
             else:
                 s = 1.0 if math.sin(fase) >= 0 else -1.0
-            ataque = min(1.0, t / 0.004)
+            ataque = min(1.0, t / 0.008)                 # ataque suave evita "clique" no início
             out.append(s * vol * ataque * (1 - t / dur) ** decaimento)
         return out
 
@@ -405,31 +435,31 @@ class Som:
 
     def _gerar(self):
         """Gerador: cada `next()` produz um pedaço do áudio (efeitos primeiro, música por último)."""
-        self.sons["bipe"] = self._criar(self._tom(880, 0.09, 0.35, "quad", decaimento=1.0))
+        self.sons["bipe"] = self._criar(self._tom(880, 0.09, 0.5, "sin", decaimento=1.2))
         yield
-        self.sons["passo"] = self._criar(self._ruido(0.07, 0.8, 0.85, 4.0))
+        self.sons["passo"] = self._criar(self._ruido(0.07, 0.6, 0.9, 4.0))
         yield
         self.sons["acerto"] = self._criar(
-            self._tom(523, 0.11, 0.4) + self._tom(659, 0.11, 0.4) + self._tom(784, 0.11, 0.4)
-            + self._tom(1047, 0.30, 0.4, decaimento=2.0))
+            self._tom(523, 0.11, 0.6) + self._tom(659, 0.11, 0.6) + self._tom(784, 0.11, 0.6)
+            + self._tom(1047, 0.30, 0.6, decaimento=2.0))
         yield
         alarme = []
         for k in range(4):
-            alarme += self._tom(150 if k % 2 == 0 else 105, 0.16, 0.55, "serra", decaimento=0.5)
+            alarme += self._tom(330 if k % 2 == 0 else 247, 0.16, 0.7, "suave", decaimento=0.8)
         self.sons["erro"] = self._criar(alarme)
         yield
-        self.sons["fase"] = self._criar(self._tom(220, 0.5, 0.4, f1=440) + self._tom(440, 0.4, 0.4, f1=660))
+        self.sons["fase"] = self._criar(self._tom(220, 0.5, 0.6, f1=440) + self._tom(440, 0.4, 0.6, f1=660))
         yield
         self.sons["porta"] = self._criar(self._somar(
-            self._tom(90, 1.4, 0.55, "sin", f1=38, decaimento=0.8),
-            self._ruido(1.4, 0.25, 0.9, 1.2),
-            [0.0] * 200 + self._tom(260, 0.12, 0.4, "quad", f1=120)))
+            self._tom(90, 1.4, 0.6, "sin", f1=38, decaimento=0.8),
+            self._ruido(1.4, 0.2, 0.93, 1.2),
+            [0.0] * 200 + self._tom(260, 0.12, 0.35, "suave", f1=120)))
         yield
-        self.sons["derrota"] = self._criar(self._tom(220, 1.2, 0.5, "serra", f1=55, decaimento=0.7))
+        self.sons["derrota"] = self._criar(self._tom(220, 1.2, 0.7, "suave", f1=55, decaimento=0.7))
         yield
         self.sons["vitoria"] = self._criar(
-            self._tom(392, 0.15, 0.4) + self._tom(523, 0.15, 0.4) + self._tom(659, 0.15, 0.4)
-            + self._tom(784, 0.5, 0.4, decaimento=1.2))
+            self._tom(392, 0.15, 0.6) + self._tom(523, 0.15, 0.6) + self._tom(659, 0.15, 0.6)
+            + self._tom(784, 0.5, 0.6, decaimento=1.2))
         yield
         # Música de fundo: drone de sonar em loop (4 s = ciclos inteiros de 55 Hz, 82,5 Hz e 0,5 Hz).
         # O pulso (ping + batida grave) é somado nos instantes 0 s e 2 s.
@@ -450,9 +480,28 @@ class Som:
             if i % 4000 == 0:
                 yield
         self.sons["sonar"] = self._criar(sonar)
+        yield
+        # Sons do final (gerados por último: só são usados no fim da partida)
+        # explosão do reator (final B): estrondo grave + chiado que decai devagar
+        sr = self.SR
+        estrondo = self._tom(70, 2.2, 0.8, "sin", f1=25, decaimento=1.4)
+        yield
+        chiado = self._ruido(2.2, 0.55, 0.97, 2.0)
+        yield
+        self.sons["explosao"] = self._criar(self._somar(estrondo, chiado))
+        yield
+        # tema da vitória: melodia + nota grave de apoio
+        notas = [(523, .18), (659, .18), (784, .18), (1047, .36), (988, .18), (784, .18), (880, .45), (1047, .9)]
+        melodia = []
+        for f, d in notas:
+            melodia += self._tom(f, d, 0.55, "suave", decaimento=0.9)
+            yield
+        base = self._tom(131, len(melodia) / sr, 0.35, "sin", decaimento=0.6)
+        yield
+        self.sons["tema"] = self._criar(self._somar(melodia, base))
 
     # --- uso ---
-    def tocar(self, nome, volume=0.6):
+    def tocar(self, nome, volume=0.55):
         if self.ativo and not self.mudo and nome in self.sons:
             try:
                 self.sons[nome].set_volume(volume)
@@ -851,14 +900,17 @@ class TecladoTela:
                 return valor
         return None
 
-    def desenhar(self, surf, fonte, fundo, borda, texto):
+    def desenhar(self, surf, fonte, fundo, borda, texto, apagadas=()):
         valor_ap, quando = self.apertada
         recente = time.perf_counter() - quando < 0.15
         for rect, rotulo, valor in self.teclas:
             cor = tuple(min(255, c + 60) for c in fundo) if (recente and valor == valor_ap) else fundo
+            desligada = valor in apagadas
+            if desligada:
+                cor = tuple((c + 200) // 2 for c in fundo)
             pygame.draw.rect(surf, cor, rect, border_radius=6)
             pygame.draw.rect(surf, borda, rect, 2, border_radius=6)
-            img = fonte.render(rotulo, True, texto)
+            img = fonte.render(rotulo, True, (150, 140, 120) if desligada else texto)
             surf.blit(img, img.get_rect(center=rect.center))
 
 
@@ -872,17 +924,20 @@ def _k(*rotulos):
 # ----------------------------------------------------------------------------
 class BlocoNotas:
     RECT = pygame.Rect(LARGURA - 276, 72, 260, 500)
-    LINHAS_VISIVEIS = 9
+    LINHAS_VISIVEIS = 7
+    OPERADORES = "+-*/^!x×"
 
     def __init__(self, fonte):
         self.fonte = fonte
         self.aberto = False
+        self.pode_responder = False      # o Jogo liga quando há um terminal aguardando resposta
         self.teclado = TecladoTela([
             _k("7", "8", "9", "/", "("),
             _k("4", "5", "6", "*", ")"),
             _k("1", "2", "3", "-", "!"),
             _k("0", ".", "^", "+") + [("<-", "APAGAR", 1)],
             [("CE", "LIMPAR", 1), ("=", "CALCULAR", 2), ("Fechar", "FECHAR", 2)],
+            [("Usar na resposta", "RESPOSTA", 5)],
         ])
         w, h = self.teclado.tamanho
         self.teclado.posicionar(self.RECT.centerx - w // 2, self.RECT.bottom - h - 12)
@@ -891,11 +946,26 @@ class BlocoNotas:
     def reiniciar(self):
         self.linhas = [("", 0)]      # (texto, tipo)  tipo 0 = digitado, 1 = resultado
 
+    @property
+    def ultimo_resultado(self):
+        """Valor do último '= resultado' (ou None)."""
+        for texto, tipo in reversed(self.linhas):
+            if tipo == 1:
+                return texto[2:]
+        return None
+
+    @property
+    def resultado_inteiro(self):
+        """Último resultado, se for inteiro não negativo (o formato aceito pelos terminais)."""
+        r = self.ultimo_resultado
+        return r if r is not None and r.isdigit() else None
+
     # --- ações (compartilhadas por teclado físico e virtual) ---
     def calcular(self):
+        if not self.linhas[-1][0].strip():
+            return                       # '=' numa linha vazia não cria linhas em branco
         res = avaliar_expressao(self.linhas[-1][0])
-        if res is not None:
-            self.linhas.append(("= " + res, 1))
+        self.linhas.append(("= " + res, 1) if res is not None else ("= erro na expressão", 2))
         self.linhas.append(("", 0))
         self.linhas = self.linhas[-40:]
 
@@ -905,15 +975,20 @@ class BlocoNotas:
             self.linhas[-1] = (texto[:-1], 0)
         elif len(self.linhas) > 1:
             self.linhas.pop()
-            if self.linhas[-1][1] == 1:
+            if self.linhas[-1][1] != 0:
                 self.linhas.pop()
 
     def digitar(self, ch):
-        texto = self.linhas[-1][0] + ch
+        atual = self.linhas[-1][0]
+        # Continuar a conta: operador logo após um resultado usa o resultado (como numa calculadora).
+        if not atual and ch in self.OPERADORES and len(self.linhas) >= 2 and self.linhas[-2][1] == 1:
+            atual = self.linhas[-2][0][2:]
+        texto = atual + ch
         if self.fonte.size(texto)[0] <= self.RECT.width - 34:
             self.linhas[-1] = (texto, 0)
 
     def evento(self, e):
+        """Trata o evento. Devolve 'RESPOSTA' quando o jogador pede para usar o resultado no terminal."""
         if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
             v = self.teclado.tocar(e.pos)
             if v == "FECHAR":
@@ -924,11 +999,13 @@ class BlocoNotas:
                 self.apagar()
             elif v == "LIMPAR":
                 self.linhas[-1] = ("", 0)
+            elif v == "RESPOSTA":
+                return "RESPOSTA" if self.pode_responder and self.resultado_inteiro else None
             elif v:
                 self.digitar(v)
-            return
+            return None
         if e.type != pygame.KEYDOWN:
-            return
+            return None
         if e.key in (pygame.K_n, pygame.K_ESCAPE):
             self.aberto = False
         elif e.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
@@ -937,6 +1014,7 @@ class BlocoNotas:
             self.apagar()
         elif e.unicode and e.unicode.isprintable() and e.unicode not in "nN":
             self.digitar(e.unicode)
+        return None
 
     def desenhar(self, surf, t):
         r = self.RECT
@@ -946,16 +1024,23 @@ class BlocoNotas:
         pygame.draw.line(surf, (190, 120, 90), (r.x + 12, r.y + 34), (r.right - 12, r.y + 34), 2)
         y = r.y + 42
         visiveis = self.linhas[-self.LINHAS_VISIVEIS:]
+        cores = {0: tinta, 1: (20, 110, 60), 2: (170, 40, 30)}
         for texto, tipo in visiveis:
-            desenhar_texto(surf, texto, self.fonte, (20, 110, 60) if tipo else tinta, (r.x + 14, y), sombra=False)
+            desenhar_texto(surf, texto, self.fonte, cores[tipo], (r.x + 14, y), sombra=False)
             y += 23
         if int(t * 2) % 2 == 0:
             cx = r.x + 14 + self.fonte.size(self.linhas[-1][0])[0] + 1
             yy = r.y + 42 + (len(visiveis) - 1) * 23
             pygame.draw.line(surf, tinta, (cx, yy + 2), (cx, yy + 19), 2)
-        desenhar_texto(surf, "Ex: 8!/(3!*5!) e =", self.fonte, (110, 90, 60),
-                       (r.x + 14, self.teclado.teclas[0][0].y - 28), sombra=False)
-        self.teclado.desenhar(surf, self.fonte, (214, 200, 160), (140, 110, 60), tinta)
+        dica = "Após o =, use * + - /" if self.ultimo_resultado else "Ex: 8!/(3!*5!) e ="
+        desenhar_texto(surf, dica, self.fonte, (110, 90, 60),
+                       (r.x + 14, self.teclado.teclas[0][0].y - 26), sombra=False)
+        apagadas = set() if (self.pode_responder and self.resultado_inteiro) else {"RESPOSTA"}
+        self.teclado.desenhar(surf, self.fonte, (214, 200, 160), (140, 110, 60), tinta, apagadas)
+        # destaque verde no botão "Usar na resposta" quando ele pode ser usado
+        if not apagadas:
+            rect = [r_ for r_, _, v in self.teclado.teclas if v == "RESPOSTA"][0]
+            pygame.draw.rect(surf, (30, 140, 70), rect, 3, border_radius=6)
 
 
 # ----------------------------------------------------------------------------
@@ -1013,7 +1098,7 @@ class Desafio:
                 elif v:
                     self.digitar(v)
                 elif self.btn_notas.collidepoint(e.pos):
-                    self.jogo.notas.aberto = True
+                    self.jogo.notas.aberto = not self.jogo.notas.aberto
                 elif self.btn_sair.collidepoint(e.pos):
                     self.jogo.desafio = None
             elif e.type == pygame.KEYDOWN:
@@ -1033,6 +1118,7 @@ class Desafio:
                 self.jogo.continuar_desafio(self)
 
     def enviar(self):
+        self.jogo.notas.aberto = False       # respondeu: o bloco de notas fecha sozinho
         self.questao_resolvida = self.questao
         self.acertou = self.entrada.strip() == self.questao["resposta"]
         self.estado = "feedback"
@@ -1258,7 +1344,7 @@ class Jogo:
         self.t = 0.0
         self.rodando = True
         self.btn_iniciar = Botao((LARGURA // 2 - 150, 560, 300, 56), "INICIAR MISSÃO")
-        self.btn_novo = Botao((LARGURA // 2 - 170, 530, 340, 56), "INICIAR NOVA PARTIDA")
+        self.btn_novo = Botao((LARGURA // 2 - 170, 526, 340, 56), "INICIAR NOVA PARTIDA")
         self.btn_fugir = Botao((90, 360, 400, 120), "1 · FUGIR NA CÁPSULA", (20, 80, 60))
         self.btn_sobrecarga = Botao((534, 360, 400, 120), "2 · SOBRECARREGAR O REATOR", (110, 40, 30))
         self.btn_continuar = Botao((LARGURA // 2 - 230, 400, 220, 56), "CONTINUAR")
@@ -1397,6 +1483,8 @@ class Jogo:
         self.final_escolhido = None
         self.passo_t = 0.0
         self.pausado = False
+        self.fogos = []
+        self.cinema_t = 0.0
         self.carregar_fase(0)
         if iniciar:
             self.estado = INTRO
@@ -1421,7 +1509,7 @@ class Jogo:
             self.som.tocar("acerto")
             if self.fase.acertos >= self.fase.meta and not self.fase.porta.aberta:
                 self.fase.porta.abrir()
-                self.som.tocar("porta", 0.8)
+                self.som.tocar("porta", 0.6)
                 self.avisar("Meta cumprida! A porta hidráulica está se abrindo.", 4.0)
         else:
             self.erros += 1
@@ -1449,7 +1537,12 @@ class Jogo:
         self.motivo_derrota = motivo
         self.desafio = None
         self.notas.aberto = False
-        self.som.tocar("derrota" if estado == DERROTA else "vitoria")
+        self.tremor = 0.0
+        if estado == DERROTA:
+            self.som.tocar("derrota")
+        else:
+            self.fogos = []
+            self.som.tocar("tema" if "tema" in self.som.sons else "vitoria", 0.6)
 
     def interagir(self):
         for t in self.fase.terminais:
@@ -1551,7 +1644,12 @@ class Jogo:
                     self.pausado = False
                     self.estado = MENU
             elif self.notas.aberto:
-                self.notas.evento(e)
+                if (self.desafio and e.type == pygame.MOUSEBUTTONDOWN
+                        and not BlocoNotas.RECT.collidepoint(e.pos)):
+                    self.desafio.evento(e)      # toque no terminal com as notas abertas (teclado, OK...)
+                elif self.notas.evento(e) == "RESPOSTA" and self.desafio:
+                    self.desafio.entrada = self.notas.resultado_inteiro[:9]
+                    self.notas.aberto = False
             elif e.type == pygame.KEYDOWN and e.key == pygame.K_p:
                 self.pausado = True
             elif not self.desafio and e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE:
@@ -1564,10 +1662,13 @@ class Jogo:
                 self.interagir()
         elif self.estado == ESCOLHA_FINAL:
             if (e.type == pygame.KEYDOWN and e.key == pygame.K_1) or self.btn_fugir.clicado(e):
-                self.final_escolhido = "fugir"
-                self.encerrar(VITORIA)
+                self.iniciar_cinema("fugir")
             elif (e.type == pygame.KEYDOWN and e.key == pygame.K_2) or self.btn_sobrecarga.clicado(e):
-                self.final_escolhido = "sobrecarregar"
+                self.iniciar_cinema("sobrecarregar")
+        elif self.estado == CINEMA:
+            pular = (e.type == pygame.KEYDOWN and e.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_ESCAPE)) or \
+                    (e.type == pygame.MOUSEBUTTONDOWN and e.button == 1)
+            if pular and self.cinema_t > 1.0:
                 self.encerrar(VITORIA)
         elif self.estado in (VITORIA, DERROTA):
             if (e.type == pygame.KEYDOWN and e.key in (pygame.K_RETURN, pygame.K_r)) or self.btn_novo.clicado(e):
@@ -1577,6 +1678,7 @@ class Jogo:
     def atualizar(self, dt):
         self.t += dt
         self.som.preparar()
+        self.notas.pode_responder = bool(self.desafio and self.desafio.estado == "pergunta")
         if self.toque.ativo and EH_WEB:              # celular girou / entrou em tela cheia?
             self._checar_tela_t += dt
             if self._checar_tela_t > 0.5:
@@ -1593,6 +1695,198 @@ class Jogo:
                 self.estado = JOGANDO
         elif self.estado == JOGANDO and not self.pausado:
             self.atualizar_jogo(dt)
+        elif self.estado == CINEMA:
+            self.atualizar_cinema(dt)
+        elif self.estado == VITORIA:
+            for f in self.fogos:
+                f[0] += f[2] * dt
+                f[1] += f[3] * dt
+                f[3] += 40 * dt
+                f[4] -= dt
+            self.fogos = [f for f in self.fogos if f[4] > 0]
+            if random.random() < 0.08:          # brilhos subindo na tela de vitória
+                cx = random.uniform(120, LARGURA - 120)
+                cor = random.choice([VERDE, AMARELO, CIANO, (255, 140, 200)])
+                for _ in range(18):
+                    ang = random.uniform(0, math.tau)
+                    v = random.uniform(40, 130)
+                    self.fogos.append([cx, random.uniform(40, 200), math.cos(ang) * v, math.sin(ang) * v,
+                                       random.uniform(0.8, 1.6), cor])
+
+    # ------------------------------------------------------------ cinemática de vitória
+    def iniciar_cinema(self, final):
+        self.final_escolhido = final
+        self.estado = CINEMA
+        self.cinema_t = 0.0
+        self.cinema_eventos = set()
+        self.cinema_bolhas = []
+        self.destrocos = []
+        self.tremor = 0.0
+        self.desafio = None
+        self.notas.aberto = False
+        self.som.tocar("porta", 0.45)
+
+    def _estacao_y(self):
+        return 430 + self.cinema_t * 15           # a câmera sobe: a estação "desce" na tela
+
+    def _capsula_pos(self):
+        t = self.cinema_t
+        y0 = 430 - 40
+        k = 1 - (1 - min(1.0, t / 5.0)) ** 3      # sai rápido e desacelera
+        return 512, y0 + (250 - y0) * k + math.sin(t * 2.2) * 4
+
+    def atualizar_cinema(self, dt):
+        self.cinema_t += dt
+        t = self.cinema_t
+        sobrecarga = self.final_escolhido == "sobrecarregar"
+        if sobrecarga and t >= 4.5 and "boom" not in self.cinema_eventos:
+            self.cinema_eventos.add("boom")
+            self.som.tocar("explosao", 0.7)
+            self.tremor = 1.3
+            sy = self._estacao_y()
+            self.destrocos = [[512 + random.uniform(-160, 160), sy + random.uniform(0, 80),
+                               random.uniform(-260, 260), random.uniform(-220, 40),
+                               random.randint(8, 26), random.randint(5, 14), random.uniform(0, 6)]
+                              for _ in range(26)]
+        if not sobrecarga and t >= 6.5 and "ping" not in self.cinema_eventos:
+            self.cinema_eventos.add("ping")
+            self.som.tocar("bipe", 0.25)
+        if t >= 11.5 and "sol" not in self.cinema_eventos:
+            self.cinema_eventos.add("sol")
+            self.som.tocar("fase", 0.4)
+        self.tremor = max(0.0, self.tremor - dt)
+        for d in self.destrocos:
+            d[0] += d[2] * dt
+            d[1] += d[3] * dt + 26 * dt            # cai e acompanha a "descida" da câmera
+            d[3] += 90 * dt
+            d[6] += dt * 3
+        cx, cy = self._capsula_pos()
+        if random.random() < 0.7:
+            self.cinema_bolhas.append([cx + random.uniform(-7, 7), cy + 34, random.uniform(2, 5)])
+        for b in self.cinema_bolhas:
+            b[1] += 95 * dt
+            b[0] += math.sin(t * 3 + b[2]) * 10 * dt
+        self.cinema_bolhas = [b for b in self.cinema_bolhas if b[1] < ALTURA + 10][-140:]
+        if t >= CINEMA_TOTAL:
+            self.encerrar(VITORIA)
+
+    def _desenhar_estacao(self, s, sy, luzes, brilho):
+        """Silhueta da Acheron-4 vista de lado."""
+        for x in (360, 512, 664):                                  # pilares até o fundo
+            pygame.draw.rect(s, (14, 20, 30), (x - 9, sy + 90, 18, 400))
+        for x in (402, 622):                                       # cúpulas
+            pygame.draw.circle(s, (30, 40, 54), (x, sy + 8), 44)
+            pygame.draw.circle(s, (46, 60, 78), (x, sy + 8), 44, 2)
+        corpo = pygame.Rect(0, 0, 440, 110)
+        corpo.midtop = (512, sy)
+        pygame.draw.rect(s, (26, 34, 46), corpo, border_radius=20)
+        pygame.draw.rect(s, (52, 68, 88), corpo, 2, border_radius=20)
+        for i in range(12):                                        # janelas
+            jx = corpo.x + 28 + i * 33
+            cor = (250, 214, 120) if i < luzes else (16, 22, 30)
+            pygame.draw.rect(s, cor, (jx, sy + 34, 16, 10), border_radius=2)
+        if brilho > 0:                                             # núcleo do reator
+            r = int(16 + 10 * brilho)
+            pygame.draw.circle(s, (255, int(120 + 100 * brilho), 40), (512, sy + 74), r)
+            pygame.draw.circle(s, (255, 240, 200), (512, sy + 74), max(4, r // 2))
+
+    def _desenhar_capsula(self, s, cx, cy, t):
+        chama = 10 + int(6 * abs(math.sin(t * 30)))
+        pygame.draw.polygon(s, (255, 170, 60), [(cx - 8, cy + 30), (cx + 8, cy + 30), (cx, cy + 30 + chama)])
+        pygame.draw.ellipse(s, (210, 220, 232), (cx - 18, cy - 32, 36, 64))
+        pygame.draw.ellipse(s, (120, 135, 150), (cx - 18, cy - 32, 36, 64), 2)
+        pygame.draw.rect(s, (250, 150, 30), (cx - 18, cy + 4, 36, 6))
+        pygame.draw.circle(s, (60, 200, 230), (cx, cy - 10), 8)
+        pygame.draw.circle(s, (220, 255, 255), (cx - 3, cy - 13), 2)
+
+    def desenhar_cinema(self, surf):
+        t = self.cinema_t
+        s = self.tela_jogo
+        sobrecarga = self.final_escolhido == "sobrecarregar"
+        sup = max(0.0, min(1.0, (t - 9.0) / 6.0))                 # aproximação da superfície
+        lerp = lambda a, b, k: tuple(int(a[i] + (b[i] - a[i]) * k) for i in range(3))
+        topo = lerp((6, 16, 32), (70, 160, 210), sup)
+        fundo = lerp((1, 4, 10), (16, 60, 110), sup)
+        for i in range(0, ALTURA, 20):
+            pygame.draw.rect(s, lerp(topo, fundo, i / ALTURA), (0, i, LARGURA, 20))
+        if sup > 0:                                                # raios de sol
+            self.aneis.fill((0, 0, 0, 0))
+            for k in range(6):
+                x = 120 + k * 170 + math.sin(t * 0.6 + k) * 30
+                pygame.draw.polygon(self.aneis, (255, 255, 230, int(38 * sup)),
+                                    [(x - 30, 0), (x + 30, 0), (x + 140, ALTURA), (x + 40, ALTURA)])
+            s.blit(self.aneis, (0, 0))
+        sy = self._estacao_y()
+        explodiu = sobrecarga and t >= 4.5
+        if not explodiu and sy < ALTURA + 120:
+            luzes = 12 if sobrecarga else max(0, 12 - int(max(0.0, t - 3.0) * 2.2))
+            brilho = min(1.0, t / 4.5) * (0.6 + 0.4 * abs(math.sin(t * (4 + 6 * t / 4.5)))) if sobrecarga else 0
+            self._desenhar_estacao(s, sy, luzes, brilho)
+        if not sobrecarga and 6.0 <= t <= 12.0:                   # olhos do organismo no escuro
+            a = math.sin((t - 6.0) / 6.0 * math.pi)
+            if int(t * 3) % 7 != 0:                                 # pisca de vez em quando
+                self.camada.fill((0, 0, 0, 0))
+                for ex, ey in ((150, 470), (178, 466), (860, 500), (884, 504)):
+                    pygame.draw.circle(self.camada, (255, 40, 40, int(90 * a)), (ex, ey), 12)
+                    pygame.draw.circle(self.camada, (255, 120, 90, int(230 * a)), (ex, ey), 4)
+                s.blit(self.camada, (0, 0))
+        for x, y, r in self.cinema_bolhas:
+            pygame.draw.circle(s, (170, 220, 240), (int(x), int(y)), int(r), 1)
+        if explodiu:
+            te = t - 4.5
+            for d in self.destrocos:
+                p = pygame.Surface((d[4], d[5]), pygame.SRCALPHA)
+                p.fill((60, 66, 78))
+                p = pygame.transform.rotate(p, d[6] * 57)
+                s.blit(p, (d[0], d[1]))
+            if te < 3.0:
+                self.camada.fill((0, 0, 0, 0))
+                for k, cor in ((1.0, (255, 220, 160)), (0.7, (255, 140, 60))):
+                    raio = int(te * 620 * k)
+                    if raio > 4:
+                        pygame.draw.circle(self.camada, (*cor, int(200 * max(0, 1 - te / 3))), (512, int(sy + 60)), raio, 10)
+                brilho = max(0.0, 1 - te / 2.0)
+                if brilho > 0:
+                    pygame.draw.circle(self.camada, (255, 190, 90, int(160 * brilho)), (512, int(sy + 60)), int(60 + 220 * te))
+                s.blit(self.camada, (0, 0))
+            if te < 0.9:                                           # clarão branco
+                self.camada.fill((255, 255, 255, int(255 * (1 - te / 0.9))))
+                s.blit(self.camada, (0, 0))
+        cx, cy = self._capsula_pos()
+        self._desenhar_capsula(s, cx, int(cy), t)
+        # legenda com efeito de máquina de escrever
+        legendas = LEGENDAS_FINAL[self.final_escolhido]
+        idx = min(len(legendas) - 1, int(t / 3.9))
+        local = t - idx * 3.9
+        texto = legendas[idx][:int(local * 48)]
+        r = pygame.Rect(90, 56, LARGURA - 180, 84)
+        painel(s, r, borda=AMARELO if sobrecarga else CIANO, alfa=200)
+        desenhar_paragrafo(s, texto, self.fontes["texto"], BRANCO, r.x + 24, r.y + 12, r.width - 48, espaco=3)
+        titulo = FINAIS[self.final_escolhido][0]
+        desenhar_texto(s, titulo, self.fontes["titulo"], AMARELO, (LARGURA // 2, 14), centro=True)
+        if t > 1.0:
+            desenhar_texto(s, "[Enter] ou toque para pular", self.fontes["peq"], CINZA, (LARGURA // 2, ALTURA - 30), centro=True)
+        if t > CINEMA_TOTAL - 1.2:                                 # fade para a tela de vitória
+            s.blit(self.veu(int(255 * min(1.0, (t - (CINEMA_TOTAL - 1.2)) / 1.2)) // 8 * 8), (0, 0))
+        ox = oy = 0
+        if self.tremor > 0:
+            amp = int(14 * self.tremor)
+            ox, oy = random.randint(-amp, amp), random.randint(-amp, amp)
+        surf.fill((0, 0, 0))
+        surf.blit(s, (ox, oy))
+
+    def classificacao(self):
+        """Classificação final: (letra, título, cor, pontos)."""
+        t = max(0, int(self.tempo))
+        e = self.erros
+        pontos = max(0, TOTAL_ACERTOS * 100 + t * 2 - e * 150)
+        if e == 0 and t >= 300:
+            return "S", "Mestre(a) da Combinatória", AMARELO, pontos
+        if e <= 1 and t >= 180:
+            return "A", "Engenheiro(a) do Protocolo", VERDE, pontos
+        if e <= 3:
+            return "B", "Sobrevivente Calculista", CIANO, pontos
+        return "C", "Escapou por um triz", (200, 160, 255), pontos
 
     def atualizar_jogo(self, dt):
         self.tempo -= dt
@@ -1608,7 +1902,7 @@ class Jogo:
             self.passo_t += dt
             if self.passo_t > 0.3:
                 self.passo_t = 0
-                self.som.tocar("passo", 0.35)
+                self.som.tocar("passo", 0.3)
         f.porta.atualizar(dt)
         self.flash_verm = max(0, self.flash_verm - dt)
         self.flash_verde = max(0, self.flash_verde - dt)
@@ -1808,7 +2102,60 @@ class Jogo:
                            f["peq"], CINZA, self.btn_sobrecarga.rect.x + 20, self.btn_sobrecarga.rect.y + 60, 360, centro=True)
         desenhar_texto(surf, "Escolha com [1] ou [2], ou clique em uma opção", f["peq"], CINZA, (LARGURA // 2, 520), centro=True)
 
+    def desenhar_vitoria(self, surf):
+        self.desenhar_fundo_menu(surf)
+        f = self.fontes
+        self.aneis.fill((0, 0, 0, 0))                               # raios de luz
+        for k in range(5):
+            x = 140 + k * 190 + math.sin(self.t * 0.5 + k) * 25
+            pygame.draw.polygon(self.aneis, (255, 255, 220, 22),
+                                [(x - 25, 0), (x + 25, 0), (x + 120, ALTURA), (x + 30, ALTURA)])
+        surf.blit(self.aneis, (0, 0))
+        for x, y, vx, vy, vida, cor in self.fogos:                  # brilhos
+            pygame.draw.circle(surf, cor, (int(x), int(y)), 3 if vida > 0.5 else 2)
+        titulo, corpo = FINAIS[self.final_escolhido]
+        pulso = 1 + 0.04 * math.sin(self.t * 3)
+        img = f["gigante"].render("VITÓRIA!", True, VERDE)
+        img = pygame.transform.smoothscale(img, (int(img.get_width() * pulso), int(img.get_height() * pulso)))
+        surf.blit(img, img.get_rect(midtop=(LARGURA // 2, 12)))
+        desenhar_texto(surf, titulo, f["grande"], AMARELO, (LARGURA // 2, 80), centro=True)
+        y = desenhar_paragrafo(surf, corpo, f["texto"], BRANCO, 110, 128, LARGURA - 220, espaco=2, centro=True)
+        desenhar_paragrafo(surf, EPILOGOS[self.final_escolhido], f["peq"], (180, 205, 220), 150, y + 6,
+                           LARGURA - 300, espaco=2, centro=True)
+        # estatísticas
+        letra, rotulo, cor, pontos = self.classificacao()
+        r = pygame.Rect(80, 296, 540, 210)
+        painel(surf, r, borda=VERDE)
+        t = max(0, int(self.tempo))
+        gasto = TEMPO_TOTAL - t
+        linhas = [("Acertos", f"{self.acertos_total}/{TOTAL_ACERTOS}"),
+                  ("Falhas críticas", f"{self.erros}/{MAX_ERROS}"),
+                  ("Tempo restante", f"{t // 60:02d}:{t % 60:02d}"),
+                  ("Tempo usado", f"{gasto // 60:02d}:{gasto % 60:02d}"),
+                  ("Pontuação", f"{pontos}")]
+        for i, (k, v) in enumerate(linhas):
+            yy = r.y + 16 + i * 37
+            desenhar_texto(surf, k, f["titulo"], CINZA, (r.x + 30, yy))
+            img = f["titulo"].render(v, True, AMARELO if k == "Pontuação" else BRANCO)
+            surf.blit(img, img.get_rect(topright=(r.right - 30, yy)))
+        # classificação
+        rc = pygame.Rect(644, 296, 300, 210)
+        painel(surf, rc, borda=cor)
+        desenhar_texto(surf, "CLASSIFICAÇÃO", f["hud_l"], CINZA, (rc.centerx, rc.y + 14), centro=True)
+        centro = (rc.centerx, rc.y + 94)
+        pygame.draw.circle(surf, (10, 20, 32), centro, 52)
+        pygame.draw.circle(surf, cor, centro, 52, 4)
+        img = f["gigante"].render(letra, True, cor)
+        surf.blit(img, img.get_rect(center=centro))
+        desenhar_paragrafo(surf, rotulo, f["titulo"], BRANCO, rc.x + 10, rc.y + 156, rc.width - 20, espaco=0, centro=True)
+        self.btn_novo.desenhar(surf, f["titulo"])
+        desenhar_texto(surf, "Protocolo Cronos · Projeto 2 - Escape Room de Análise Combinatória · Obrigado por jogar!",
+                       f["peq"], CINZA, (LARGURA // 2, 604), centro=True)
+
     def desenhar_fim(self, surf):
+        if self.estado == VITORIA:
+            self.desenhar_vitoria(surf)
+            return
         self.desenhar_fundo_menu(surf)
         f = self.fontes
         venceu = self.estado == VITORIA
@@ -1842,6 +2189,8 @@ class Jogo:
             self.desenhar_jogo()
         elif self.estado == ESCOLHA_FINAL:
             self.desenhar_escolha(self.tela)
+        elif self.estado == CINEMA:
+            self.desenhar_cinema(self.tela)
         else:
             self.desenhar_fim(self.tela)
         self.desenhar_botoes_sistema(self.tela)

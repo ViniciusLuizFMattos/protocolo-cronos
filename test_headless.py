@@ -201,9 +201,23 @@ def testar_fluxo(salvar_dir=None):
     passos(jogo, 2)
     salvar(jogo, salvar_dir, "8_escolha")
     tecla(jogo, pygame.K_2, "2")
+    assert jogo.estado == main.CINEMA and jogo.final_escolhido == "sobrecarregar"
+    passos(jogo, int(4.9 * 60))
+    assert "boom" in jogo.cinema_eventos, "explosão não aconteceu"
+    salvar(jogo, salvar_dir, "9a_cinema_explosao")
+    passos(jogo, int(8 * 60))
+    salvar(jogo, salvar_dir, "9b_cinema_superficie")
+    tecla(jogo, pygame.K_RETURN)                       # pula o resto da cinemática
     assert jogo.estado == main.VITORIA
-    passos(jogo, 2)
+    passos(jogo, 90)
     salvar(jogo, salvar_dir, "9_vitoria")
+    # final A completo, sem pular: termina sozinho na tela de vitória
+    jogo.iniciar_cinema("fugir")
+    passos(jogo, int(8 * 60))
+    salvar(jogo, salvar_dir, "9c_cinema_fugir")
+    passos(jogo, int((main.CINEMA_TOTAL - 8 + 0.5) * 60))
+    assert jogo.estado == main.VITORIA and jogo.final_escolhido == "fugir"
+    assert jogo.classificacao()[0] in "SABC"
     # reinício
     tecla(jogo, pygame.K_RETURN)
     assert jogo.estado == main.INTRO and jogo.acertos_total == 0 and jogo.erros == 0
@@ -301,6 +315,36 @@ def testar_fluxo(salvar_dir=None):
     assert not jogo.notas.aberto
     tecla(jogo, pygame.K_RETURN)          # fecha o feedback do terminal
     assert jogo.desafio is None
+    # notas + terminal: conta em sequência, "Usar na resposta" e OK fechando as notas
+    t0.feita = False
+    jogo.jogador.rect.midbottom = (t0.rect.centerx, t0.rect.bottom + 22)
+    jogo.jogador.px, jogo.jogador.py = jogo.jogador.rect.center
+    tecla(jogo, pygame.K_e, "e")
+    assert jogo.desafio and jogo.desafio.estado == "pergunta"
+    clique(jogo, jogo.desafio.btn_notas.center)
+    assert jogo.notas.aberto
+    passos(jogo, 1)
+    for ch in "8!/(3!*5!)":
+        clique(jogo, tn[ch])
+    clique(jogo, tn["CALCULAR"])
+    for ch in "*2":                       # continua a partir do resultado anterior (56)
+        clique(jogo, tn[ch])
+    assert jogo.notas.linhas[-1][0] == "56*2", jogo.notas.linhas
+    clique(jogo, tn["CALCULAR"])
+    assert jogo.notas.linhas[-2][0] == "= 112", jogo.notas.linhas
+    passos(jogo, 2)
+    salvar(jogo, salvar_dir, "15b_notas_sequencia")
+    clique(jogo, tn["RESPOSTA"])
+    assert jogo.desafio.entrada == "112" and not jogo.notas.aberto, "Usar na resposta falhou"
+    clique(jogo, jogo.desafio.btn_notas.center)            # reabre as notas
+    assert jogo.notas.aberto
+    passos(jogo, 1)
+    td = {v: r.center for r, _, v in jogo.desafio.teclado.teclas}
+    clique(jogo, td["OK"])                                 # OK do terminal com as notas abertas
+    assert jogo.desafio.estado == "feedback" and not jogo.notas.aberto, "OK não fechou as notas"
+    tecla(jogo, pygame.K_RETURN)
+    tecla(jogo, pygame.K_ESCAPE)
+    jogo.desafio = None
     # tela larga (celular deitado, ~20:9): jogo centralizado, controles nas faixas laterais
     jogo.ajustar_largura(1400)
     ox = jogo.ox
